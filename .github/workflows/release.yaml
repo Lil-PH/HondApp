@@ -1,20 +1,23 @@
-name: Build and Release HondApp OTA
+name: HondApp - OTA automatico
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
+    paths-ignore:
+      - "README.md"
+      - "docs/**"
   workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  build-ota:
+  build-and-release:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Baixar codigo do repositorio
+      - name: Baixar codigo desta versao
         uses: actions/checkout@v4
 
       - name: Preparar Python
@@ -23,26 +26,22 @@ jobs:
           python-version: "3.11"
 
       - name: Instalar PlatformIO
-        run: pip install platformio
+        run: python -m pip install --upgrade platformio
 
       - name: Compilar firmware ESP32-S3
-        run: pio run
+        run: pio run -e esp32-s3-devkitc-1
 
-      - name: Preparar arquivo OTA
-        run: |
-          cp .pio/build/esp32-s3-devkitc-1/firmware.bin main.cpp.bin
-
-      - name: Guardar binario compilado
-        uses: actions/upload-artifact@v4
-        with:
-          name: HondApp-OTA
-          path: main.cpp.bin
-          retention-days: 30
+      - name: Preparar binario OTA
+        run: cp .pio/build/esp32-s3-devkitc-1/firmware.bin main.cpp.bin
 
       - name: Criar Release e publicar OTA
-        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
-          name: HondApp ${{ github.ref_name }}
+          tag_name: ota-${{ github.run_number }}
+          name: HondApp OTA ${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
           generate_release_notes: true
           files: main.cpp.bin
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

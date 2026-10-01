@@ -1,0 +1,35 @@
+name: Compilar Firmware ESP32-S3
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout do Código
+        uses: actions/checkout@v4
+
+      - name: Configurar Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Instalar Placa ESP32
+        run: |
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32
+
+      - name: Instalar Bibliotecas Necessárias
+        run: |
+          arduino-cli lib install "LovyanGFX"
+
+      - name: Compilar Código Estruturado
+        run: |
+          # Compila apontando para o arquivo principal dentro de src/
+          arduino-cli compile --fqbn esp32:esp32:esp32s3 --output-dir ./build src/main.cpp
+
+      - name: Salvar o Arquivo Binário gerado
+        uses: actions/upload-artifact@v4
+        with:
+          name: firmware
+          path: ./build/main.cpp.bin

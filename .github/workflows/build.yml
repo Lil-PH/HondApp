@@ -2,7 +2,7 @@ name: Compilar Firmware ESP32-S3
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "master" ]
 
 jobs:
   build:
@@ -23,13 +23,13 @@ jobs:
         run: |
           arduino-cli lib install "LovyanGFX"
 
-      - name: Compilar Código Estruturado
+      - name: Compilar Projeto Arduino
         run: |
-          # Compila apontando para o arquivo principal dentro de src/
-          arduino-cli compile --fqbn esp32:esp32:esp32s3 --output-dir ./build src/main.cpp
+          # Aponta para a pasta onde está o arquivo principal .ino
+          arduino-cli compile --fqbn esp32:esp32:esp32s3 --output-dir ./build .
 
       - name: Salvar o Arquivo Binário gerado
         uses: actions/upload-artifact@v4
         with:
           name: firmware
-          path: ./build/main.cpp.bin
+          path: ./build/HondApp.ino.bin

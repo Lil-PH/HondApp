@@ -1,35 +1,48 @@
-name: Compilar Firmware ESP32-S3
+name: Build and Release HondApp OTA
 
 on:
   push:
-    branches: [ "main", "master" ]
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
-  build:
+  build-ota:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout do Código
+      - name: Baixar codigo do repositorio
         uses: actions/checkout@v4
 
-      - name: Configurar Arduino CLI
-        uses: arduino/setup-arduino-cli@v2
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-      - name: Instalar Placa ESP32
+      - name: Instalar PlatformIO
+        run: pip install platformio
+
+      - name: Compilar firmware ESP32-S3
+        run: pio run
+
+      - name: Preparar arquivo OTA
         run: |
-          arduino-cli core update-index
-          arduino-cli core install esp32:esp32
+          cp .pio/build/esp32-s3-devkitc-1/firmware.bin main.cpp.bin
 
-      - name: Instalar Bibliotecas Necessárias
-        run: |
-          arduino-cli lib install "LovyanGFX"
-          arduino-cli lib install "WiFiManager"
-
-      - name: Compilar Projeto Arduino na Raiz
-        run: |
-          arduino-cli compile --fqbn esp32:esp32:esp32s3 --output-dir ./build .
-
-      - name: Salvar o Arquivo Binário gerado
+      - name: Guardar binario compilado
         uses: actions/upload-artifact@v4
         with:
-          name: firmware
-          path: ./build/HondApp.ino.bin
+          name: HondApp-OTA
+          path: main.cpp.bin
+          retention-days: 30
+
+      - name: Criar Release e publicar OTA
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: HondApp ${{ github.ref_name }}
+          generate_release_notes: true
+          files: main.cpp.bin

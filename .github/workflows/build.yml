@@ -26,7 +26,7 @@ jobs:
       - name: Compilar Projeto Arduino
         run: |
           # Aponta para a pasta onde está o arquivo principal .ino
-          arduino-cli compile --fqbn esp32:esp32:esp32s3 --output-dir ./build .
+          arduino-cli compile --fqbn esp32:esp32:esp32s3 --output-dir ./build src
 
       - name: Salvar o Arquivo Binário gerado
         uses: actions/upload-artifact@v4

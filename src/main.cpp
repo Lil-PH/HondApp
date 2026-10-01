@@ -1195,14 +1195,14 @@ void renderSettingsScreen() {
     canvas.drawRoundRect(configX, tabY, configW, tabH, 6, tempSelectedHex);
   }
   canvas.setTextColor(activeTab == TAB_CONFIGURACOES ? C_TEXT_WHITE : C_TEXT_MUTED, activeTab == TAB_CONFIGURACOES ? C_CARD_BG : C_MENU_BG);
-  canvas.setCursor(126, 38); canvas.print("Configuracoes");
+  canvas.setCursor(126, 38); canvas.print("Configurações");
 
   if (activeTab == TAB_ATUALIZACAO) {
     canvas.fillRoundRect(updateX, tabY, updateW, tabH, 6, C_CARD_BG);
     canvas.drawRoundRect(updateX, tabY, updateW, tabH, 6, tempSelectedHex);
   }
   canvas.setTextColor(activeTab == TAB_ATUALIZACAO ? C_TEXT_WHITE : C_TEXT_MUTED, activeTab == TAB_ATUALIZACAO ? C_CARD_BG : C_MENU_BG);
-  canvas.setCursor(235, 38); canvas.print("Atualizacao");
+  canvas.setCursor(235, 38); canvas.print("Atualização");
 
   canvas.drawFastHLine(0, 58, 320, C_BORDER_DARK);
 
@@ -1473,7 +1473,7 @@ void renderSettingsScreen() {
 
   canvas.setTextColor(C_TEXT_MUTED, C_MENU_BG);
   canvas.setCursor(10, 215);
-  canvas.print("HONDAPP");
+  canvas.print("By PH");
 
   canvas.fillRoundRect(126, 208, 55, 24, 6, C_BTN_GRAY);
   canvas.drawRoundRect(126, 208, 55, 24, 6, C_BORDER_DARK);

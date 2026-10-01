@@ -1,0 +1,48 @@
+name: Build and Release HondApp OTA
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-ota:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar codigo do repositorio
+        uses: actions/checkout@v4
+
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar PlatformIO
+        run: pip install platformio
+
+      - name: Compilar firmware ESP32-S3
+        run: pio run
+
+      - name: Preparar arquivo OTA
+        run: |
+          cp .pio/build/esp32-s3-devkitc-1/firmware.bin main.cpp.bin
+
+      - name: Guardar binario compilado
+        uses: actions/upload-artifact@v4
+        with:
+          name: HondApp-OTA
+          path: main.cpp.bin
+          retention-days: 30
+
+      - name: Criar Release e publicar OTA
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          name: HondApp ${{ github.ref_name }}
+          generate_release_notes: true
+          files: main.cpp.bin

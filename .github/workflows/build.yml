@@ -22,10 +22,10 @@ jobs:
       - name: Instalar Bibliotecas Necessárias
         run: |
           arduino-cli lib install "LovyanGFX"
+          arduino-cli lib install "WiFiManager"
 
-      - name: Compilar Projeto Arduino
+      - name: Compilar Projeto Arduino na Raiz
         run: |
-          # Componta para a raiz do repositório onde está o HondApp.ino
           arduino-cli compile --fqbn esp32:esp32:esp32s3 --output-dir ./build .
 
       - name: Salvar o Arquivo Binário gerado

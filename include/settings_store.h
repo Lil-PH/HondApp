@@ -9,6 +9,7 @@ struct DashboardSettings {
   uint8_t vehicleMode;
   uint8_t timeFormat;
   uint8_t tempUnit;
+  bool menuButtonVisible;
 };
 
 // Lê e grava somente as preferências persistentes do painel.

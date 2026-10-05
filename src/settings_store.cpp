@@ -14,6 +14,7 @@ void loadDashboardSettings(DashboardSettings &settings) {
   settings.vehicleMode = preferences.getUChar("vehicle", 0);
   settings.timeFormat = preferences.getUChar("timefmt", 0);
   settings.tempUnit = preferences.getUChar("tempunit", 0);
+  settings.menuButtonVisible = preferences.getBool("menubtn", true);
   preferences.end();
 }
 
@@ -26,5 +27,6 @@ void saveDashboardSettings(const DashboardSettings &settings) {
   preferences.putUChar("vehicle", settings.vehicleMode);
   preferences.putUChar("timefmt", settings.timeFormat);
   preferences.putUChar("tempunit", settings.tempUnit);
+  preferences.putBool("menubtn", settings.menuButtonVisible);
   preferences.end();
 }

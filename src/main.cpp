@@ -7,106 +7,20 @@
 
 #include <Arduino.h>
 #include <Wire.h>
-#include <LovyanGFX.hpp>
 #include <time.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #include <WiFiManager.h>
 #include <Update.h>
+#include <esp_ota_ops.h>
 #include "settings_store.h"
+#include "hondapp_config.h"
+#include "hondapp_display.h"
 #include "driver/i2s.h"
 
 
-// ============================================================
-// HARDWARE PINOUT E CONFIGURAÇÃO DE ÁUDIO/TOUCH
-// ============================================================
-#define TFT_MOSI 11
-#define TFT_MISO 13
-#define TFT_SCLK 12
-#define TFT_CS   10
-#define TFT_DC   46
-#define TFT_RST  -1
-#define TFT_BL   45
-
-#define CTP_SDA  16
-#define CTP_SCL  15
-#define CTP_I2C_ADDR 0x38
-#define CODEC_ADDR 0x18
-
-#define I2S_BCLK  5
-#define I2S_LRCK  7
-#define I2S_DOUT  8
-#define I2S_DIN   6
-#define I2S_MCLK  4
-#define AUDIO_ENABLE 1
-
-
-enum ScreenState { STATE_BOOT, STATE_HUD, STATE_SETTINGS, STATE_FULLSCREEN_CAR };
-
-enum BootLogoType { BOOT_HONDA = 0, BOOT_TYPE_R, BOOT_CUSTOM };
-
-enum ActiveTab { TAB_PERSONALIZACAO = 0, TAB_CONFIGURACOES, TAB_ATUALIZACAO };
-
-enum VehicleDisplayMode { MODE_HOLOGRAMA = 0, MODE_FOTO_GIF };
-
-enum TimeFormatMode { TIME_12H = 0, TIME_24H };
-
-enum TempUnitMode { TEMP_CELSIUS = 0, TEMP_FAHRENHEIT };
-
-enum AudioSourceMode { AUDIO_SRC_SIM = 0, AUDIO_SRC_MIC };
-
-class LGFX : public lgfx::LGFX_Device {
-  lgfx::Panel_ILI9341 panel;
-  lgfx::Bus_SPI bus_spi;
-  lgfx::Light_PWM backlight;
-
-public:
-  LGFX() {
-    {
-      auto c = bus_spi.config();
-      c.spi_host = SPI2_HOST;
-      c.spi_mode = 0;
-      // O painel suporta este clock de escrita; reduz o tempo de troca entre abas.
-      c.freq_write = 60000000;
-      c.freq_read = 16000000;
-      c.pin_sclk = TFT_SCLK;
-      c.pin_mosi = TFT_MOSI;
-      c.pin_miso = TFT_MISO;
-      c.pin_dc = TFT_DC;
-      bus_spi.config(c);
-      panel.setBus(&bus_spi);
-    }
-    {
-      auto c = panel.config();
-      c.pin_cs = TFT_CS;
-      c.pin_rst = TFT_RST;
-      c.pin_busy = -1;
-      c.panel_width = 240;
-      c.panel_height = 320;
-      c.offset_x = 0;
-      c.offset_y = 0;
-      c.offset_rotation = 0;
-      c.readable = true;
-      c.invert = true; // Mantém o contraste ideal do painel
-      c.rgb_order = false;
-      c.dlen_16bit = false;
-      c.bus_shared = false;
-      panel.config(c);
-    }
-    {
-      auto c = backlight.config();
-      c.pin_bl = TFT_BL;
-      c.invert = false;
-      c.freq = 44100;
-      c.pwm_channel = 7;
-      backlight.config(c);
-      panel.setLight(&backlight);
-    }
-    setPanel(&panel);
-  }
-};
-
+// Hardware, cores e tipos compartilhados ficam em hondapp_config.h.
 
 // Forward declarations
 static void setAmplifierEnabled(bool enabled);
@@ -124,6 +38,7 @@ void startWiFiReconfiguration();
 void startWiFiPortal();
 void updateOnlineWeather();
 void maintainOnlineServices();
+void checkForFirmwareUpdate(bool force = false);
 void performOTAUpdate();
 void updateAudioAnimation();
 void loadSavedSettings();
@@ -144,27 +59,8 @@ void renderSettingsScreen();
 void handleTouchEvents();
 static int getSettingsMaxScroll();
 
-LGFX tft;
+HondappDisplay tft;
 LGFX_Sprite canvas(&tft);
-
-// ============================================================
-// PALETA DE CORES (PRETO AMOLED 0x0000)
-// ============================================================
-#define C_MENU_BG        0x0000
-#define C_CARD_BG        0x0000
-#define C_BORDER_DARK    0x2104 // Bordas mais discretas para contraste AMOLED
-#define C_TEXT_WHITE     0xFFFF
-#define C_TEXT_MUTED     0x7BEF
-#define C_BTN_GRAY       0x18C3
-#define C_SILVER         0xC618
-#define C_ORANGE_BOOT    0xFD00
-
-#define C_RED_ACTIVE     0xF228 
-#define C_AMBER_JDM      0xFC00
-#define C_CYAN_BLUE      0x05BA
-#define C_ACID_GREEN     0x07E0
-#define C_PURPLE_NEON    0xA2BF
-#define C_SPOON_AQUA     0x073F
 
 // ============================================================
 // ESTADOS E CONTROLES DO SISTEMA
@@ -203,6 +99,7 @@ uint16_t lastTouchY = 0;
 bool hasDragged = false;
 bool longPressTriggered = false;
 bool holdingCarCard = false;
+bool menuButtonVisible = true;
 
 unsigned long bootStartTime = 0;
 unsigned long touchStartTime = 0;
@@ -223,6 +120,8 @@ static bool networkReady = false;
 static bool wifiConnecting = false;
 static bool wifiPortalActive = false;
 static bool weatherRequestInProgress = false;
+// Impede que um segundo toque inicie outro download enquanto o primeiro ainda usa a rede.
+static bool otaRunning = false;
 static unsigned long wifiConnectStartedAt = 0;
 static String configuredNetworkName = "Nenhuma rede salva";
 static String wifiNotice = "";
@@ -230,9 +129,15 @@ static unsigned long wifiNoticeUntil = 0;
 static unsigned long lastWeatherUpdate = 0;
 static unsigned long lastWeatherAttempt = 0;
 
-// EXEMPLO: substitua esta URL pelo link RAW HTTPS do firmware .bin publicado no GitHub.
-// Exemplo final: https://raw.githubusercontent.com/SEU_USUARIO/SEU_REPOSITORIO/main/firmware.bin
+// O arquivo OTA é o asset puro publicado no Release do GitHub, nunca o ZIP do Actions.
 static const char OTA_FIRMWARE_URL[] = "https://github.com/Lil-PH/HondApp/releases/latest/download/main.cpp.bin";
+static const char OTA_RELEASE_API_URL[] = "https://api.github.com/repos/Lil-PH/HondApp/releases/latest";
+static const char HONDAPP_FIRMWARE_VERSION[] = "1.0.0";
+static bool otaCheckComplete = false;
+static bool otaUpdateAvailable = false;
+static String otaLatestVersion = "";
+static String otaStatus = "AGUARDANDO WI-FI";
+static unsigned long lastOtaCheckAt = 0;
 
 // A interface nao precisa ser redesenhada continuamente: este sinal pede um novo
 // quadro somente quando um toque, uma conexao ou uma opcao mudou algo visivel.
@@ -244,6 +149,11 @@ static ScreenState lastRenderedState = static_cast<ScreenState>(-1);
 // Isso evita a sensação de que o toque ficou preso enquanto o canvas é redesenhado.
 static bool tabContentPending = false;
 static unsigned long tabContentReadyAt = 0;
+
+// O cartão só aparece quando a API do GitHub confirma que há uma versão mais nova.
+// O teste das Configurações usa o mesmo cartão, mas desaparece sozinho após seis segundos.
+static bool testUpdateNoticeVisible = false;
+static unsigned long testUpdateNoticeUntil = 0;
 
 static const float WEATHER_LATITUDE = -20.21f;
 static const float WEATHER_LONGITUDE = -40.30f;
@@ -267,7 +177,7 @@ static int getSettingsMaxScroll() {
   // Leva os três cartões acima da linha fixa dos botões, deixando uma margem visual.
   if (activeTab == TAB_PERSONALIZACAO) return 257;
   // Faz o ajuste manual de hora parar com uma folga maior antes da barra fixa de fechar e salvar.
-  if (activeTab == TAB_CONFIGURACOES) return 137;
+  if (activeTab == TAB_CONFIGURACOES) return 250;
   return 0;
 }
 
@@ -280,6 +190,7 @@ void loadSavedSettings() {
   vehicleMode = (VehicleDisplayMode)settings.vehicleMode;
   timeFormat = (TimeFormatMode)settings.timeFormat;
   tempUnit = (TempUnitMode)settings.tempUnit;
+  menuButtonVisible = settings.menuButtonVisible;
   // O visualizador sempre inicia em SIM; MIC é apenas uma escolha temporária desta sessão.
   audioSource = AUDIO_SRC_SIM;
 
@@ -300,6 +211,7 @@ void saveSettings() {
   settings.vehicleMode = (uint8_t)vehicleMode;
   settings.timeFormat = (uint8_t)timeFormat;
   settings.tempUnit = (uint8_t)tempUnit;
+  settings.menuButtonVisible = menuButtonVisible;
   saveDashboardSettings(settings);
 }
 
@@ -506,6 +418,65 @@ void updateOnlineWeather() {
   weatherRequestInProgress = false;
 }
 
+static int compareVersions(String left, String right) {
+  left.trim(); right.trim();
+  if (left.startsWith("v") || left.startsWith("V")) left.remove(0, 1);
+  if (right.startsWith("v") || right.startsWith("V")) right.remove(0, 1);
+  for (int part = 0; part < 3; ++part) {
+    const int leftDot = left.indexOf('.');
+    const int rightDot = right.indexOf('.');
+    const int leftValue = (leftDot < 0 ? left : left.substring(0, leftDot)).toInt();
+    const int rightValue = (rightDot < 0 ? right : right.substring(0, rightDot)).toInt();
+    if (leftValue != rightValue) return leftValue > rightValue ? 1 : -1;
+    left = leftDot < 0 ? "0" : left.substring(leftDot + 1);
+    right = rightDot < 0 ? "0" : right.substring(rightDot + 1);
+  }
+  return 0;
+}
+
+void checkForFirmwareUpdate(bool force) {
+  if (WiFi.status() != WL_CONNECTED || otaRunning) return;
+  if (!force && (otaCheckComplete || millis() - lastOtaCheckAt < 600000UL)) return;
+
+  lastOtaCheckAt = millis();
+  otaStatus = "CONSULTANDO GITHUB...";
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.setTimeout(8000);
+  http.setUserAgent("HondApp-ESP32-OTA/1.0");
+  if (!http.begin(client, OTA_RELEASE_API_URL)) {
+    otaStatus = "NAO FOI POSSIVEL CONSULTAR";
+    otaCheckComplete = true;
+    requestRedraw();
+    return;
+  }
+  const int httpCode = http.GET();
+  if (httpCode == HTTP_CODE_OK) {
+    const String body = http.getString();
+    const int key = body.indexOf("\"tag_name\":");
+    const int firstQuote = key >= 0 ? body.indexOf('"', key + 11) : -1;
+    const int secondQuote = firstQuote >= 0 ? body.indexOf('"', firstQuote + 1) : -1;
+    if (firstQuote >= 0 && secondQuote > firstQuote) {
+      otaLatestVersion = body.substring(firstQuote + 1, secondQuote);
+      otaUpdateAvailable = compareVersions(otaLatestVersion, HONDAPP_FIRMWARE_VERSION) > 0;
+      otaStatus = otaUpdateAvailable ? "NOVA VERSAO DISPONIVEL" : "SISTEMA ATUALIZADO";
+      testUpdateNoticeVisible = otaUpdateAvailable;
+      // A notificação real permanece enquanto houver um Release mais novo; somente a prévia expira.
+      if (otaUpdateAvailable) testUpdateNoticeUntil = 0;
+    } else {
+      otaStatus = "RELEASE SEM VERSAO VALIDA";
+    }
+  } else if (httpCode == HTTP_CODE_NOT_FOUND) {
+    otaStatus = "NENHUM RELEASE PUBLICADO";
+  } else {
+    otaStatus = "GITHUB HTTP " + String(httpCode);
+  }
+  http.end();
+  otaCheckComplete = true;
+  requestRedraw();
+}
+
 void maintainOnlineServices() {
   // WiFiManager precisa ser atendido continuamente enquanto o celular usa 192.168.4.1.
   if (wifiPortalActive) wifiManager.process();
@@ -534,6 +505,7 @@ void maintainOnlineServices() {
       clockConfigured = true;
       updateOnlineWeather();
     }
+    checkForFirmwareUpdate();
   } else if (wifiConnecting && millis() - wifiConnectStartedAt >= 12000UL) {
     startWiFiPortal();
   }
@@ -583,9 +555,18 @@ void performOTAUpdate() {
 
   drawOTAStatus("CONECTANDO AO WI-FI...", "VERIFICANDO O ARQUIVO NO GITHUB");
   WiFiClientSecure otaClient;
-  otaClient.setInsecure(); // O GitHub usa HTTPS; substitua a URL de exemplo por sua URL RAW.
+  // O asset de um Release do GitHub passa por mais de um host HTTPS. O cliente
+  // sem validação de certificado permite acompanhar essa troca de host no ESP32.
+  otaClient.setInsecure();
+  otaClient.setHandshakeTimeout(20);
   HTTPClient http;
-  http.setTimeout(12000);
+  http.setTimeout(30000);
+  http.setConnectTimeout(15000);
+  http.setReuse(false);
+  http.useHTTP10(true);
+  // /releases/latest/download redireciona para o servidor que entrega o asset.
+  http.setFollowRedirects(HTTPC_FORCE_FOLLOW_REDIRECTS);
+  http.setUserAgent("HondApp-ESP32-OTA/1.0");
   if (!http.begin(otaClient, OTA_FIRMWARE_URL)) {
     drawOTAStatus("ERRO DE CONEXAO", "URL OTA INVALIDA");
     delay(2500);
@@ -593,27 +574,38 @@ void performOTAUpdate() {
     return;
   }
 
-  const int httpCode = http.GET();
+  int httpCode = HTTP_CODE_SERVICE_UNAVAILABLE;
+  // Uma única conexão por toque evita deixar várias tentativas TLS competindo
+  // pela RAM interna. O usuário pode tocar novamente se a internet estiver fora.
+  drawOTAStatus("CONECTANDO AO GITHUB...", "VERIFICANDO ATUALIZACAO");
+  httpCode = http.GET();
   const int contentLength = http.getSize();
   if (httpCode != HTTP_CODE_OK || contentLength <= 0) {
+    const String httpError = http.errorToString(httpCode);
     http.end();
-    drawOTAStatus("ATUALIZACAO INDISPONIVEL", "CONFIRA A URL .BIN DO GITHUB");
-    delay(2500);
+    char detail[42];
+    if (httpCode < 0) {
+      snprintf(detail, sizeof(detail), "HTTPS FALHOU: %s", httpError.c_str());
+    } else {
+      snprintf(detail, sizeof(detail), "GITHUB HTTP %d: %s", httpCode, httpError.c_str());
+    }
+    drawOTAStatus("ATUALIZACAO INDISPONIVEL", detail);
+    delay(3500);
     requestRedraw();
     return;
   }
 
   drawOTAStatus("BAIXANDO ATUALIZACAO...", "ATUALIZANDO SISTEMA - NAO DESLIGUE", 0);
-  if (!Update.begin(contentLength)) {
+  if (!Update.begin(contentLength, U_FLASH)) {
     http.end();
-    drawOTAStatus("ERRO AO PREPARAR", "MEMORIA OTA INDISPONIVEL");
-    delay(2500);
+    drawOTAStatus("ERRO AO PREPARAR", "ESPACO OTA INDISPONIVEL");
+    delay(3000);
     requestRedraw();
     return;
   }
 
   WiFiClient* stream = http.getStreamPtr();
-  uint8_t buffer[1024];
+  uint8_t buffer[512];
   size_t totalWritten = 0;
   while (http.connected() && totalWritten < (size_t)contentLength) {
     const size_t available = stream->available();
@@ -635,9 +627,12 @@ void performOTAUpdate() {
     ESP.restart();
   }
 
+  const uint8_t updateError = Update.getError();
   Update.abort();
-  drawOTAStatus("ERRO NA ATUALIZACAO", "ARQUIVO .BIN INVALIDO OU INCOMPLETO");
-  delay(2500);
+  char detail[42];
+  snprintf(detail, sizeof(detail), "BIN INVALIDO/INCOMPLETO (ERRO %u)", updateError);
+  drawOTAStatus("ERRO NA ATUALIZACAO", detail);
+  delay(3500);
   requestRedraw();
 }
 
@@ -650,7 +645,7 @@ void updateAudioAnimation() {
       audioBars[i] += (targetBars[i] - audioBars[i]) * 0.35f;
     }
   } else {
-    // Modo MIC Ativo: Sensibilidade Média Ajustada (Divisor 3500 e ganho equilibrado)
+    // Modo MIC Ativo: sensibilidade levemente maior, mantendo margem contra saturação.
     if (i2sReady) {
       int16_t samples[64];
       size_t received = 0;
@@ -668,8 +663,8 @@ void updateAudioAnimation() {
           calibrationReads++;
         }
         uint32_t signal = rms > noiseFloor ? rms - noiseFloor : 0;
-        // Ajuste de sensibilidade média (3500UL garante excelente resposta sem saturação instantânea)
-        uint32_t target = (signal * 100UL) / 3500UL;
+        // Ganho levemente maior: sons mais baixos passam a mover as barras sem saturar com facilidade.
+        uint32_t target = (signal * 100UL) / 2800UL;
         if (target > 100) target = 100;
         filteredMicLevel = (filteredMicLevel * 3 + target * 2) / 5;
         
@@ -808,8 +803,32 @@ void drawTopMenuTab() {
   canvas.print("MENU  v");
 }
 
+// Aviso sobre o painel: só é exibido após a confirmação de um Release mais novo.
+// Um toque no cartão abre diretamente a aba Atualização.
+void drawTestUpdateNotice() {
+  if (testUpdateNoticeUntil != 0 && millis() >= testUpdateNoticeUntil) {
+    testUpdateNoticeVisible = false;
+    testUpdateNoticeUntil = 0;
+  }
+  if (!testUpdateNoticeVisible) return;
+
+  // Caixa um pouco mais alta: a segunda linha fica afastada da moldura vermelha.
+  const int x = 154, y = 18, w = 158, h = 42;
+  canvas.fillRoundRect(x, y, w, h, 5, C_CARD_BG);
+  canvas.drawRoundRect(x, y, w, h, 5, C_RED_ACTIVE);
+  canvas.fillCircle(x + 12, y + 12, 4, C_RED_ACTIVE);
+  canvas.setTextColor(C_TEXT_WHITE, C_CARD_BG);
+  canvas.setTextSize(1);
+  canvas.setCursor(x + 22, y + 8);
+  canvas.print("NOVA ATUALIZACAO");
+  canvas.setTextColor(C_TEXT_MUTED, C_CARD_BG);
+  canvas.setCursor(x + 22, y + 26);
+  canvas.print("TOQUE PARA ATUALIZAR");
+}
+
 void renderDriverCard() {
-  int x = 2, y = 14, w = 155, h = 110;
+  // Quatro cartões com a mesma área: 158 × 117 px, separados por uma folga de 2 px.
+  int x = 1, y = 2, w = 158, h = 117;
   drawHUDCard(x, y, w, h, "CIVIC // DRIVER INTE...", NULL);
 
   time_t now = time(nullptr);
@@ -858,7 +877,8 @@ void renderDriverCard() {
   canvas.setTextColor(C_TEXT_WHITE, C_CARD_BG);
   int dateX = x + (w - strlen(dateStr) * 6) / 2;
   if (dateX < x + 4) dateX = x + 4;
-  canvas.setCursor(dateX, y + 78);
+  // A data fica mais afastada da linha e do marcador central para leitura mais limpa.
+  canvas.setCursor(dateX, y + 84);
   canvas.print(dateStr);
 }
 
@@ -903,7 +923,7 @@ void drawWiFiStatusIcon(int centerX, int centerY, bool connected) {
 }
 
 void renderClimateCard() {
-  int x = 161, y = 14, w = 157, h = 110;
+  int x = 161, y = 2, w = 158, h = 117;
   drawHUDCard(x, y, w, h, "CLIMATE MONITOR", NULL);
 
   int tx = x + 10;
@@ -960,7 +980,7 @@ void renderClimateCard() {
 }
 
 void renderVehicleCard() {
-  int x = 2, y = 126, w = 155, h = 111;
+  int x = 1, y = 121, w = 158, h = 117;
   drawHUDCard(x, y, w, h, "VEHICLE PROFILE", NULL);
 
   canvas.setTextColor(currentThemeHex, C_CARD_BG);
@@ -969,32 +989,25 @@ void renderVehicleCard() {
   canvas.print("360 LIVE");
 
   canvas.drawRoundRect(x + 100, y + 4, 50, 11, 3, currentThemeHex);
-  int ox = x + 6, oy = y + 26;
 
+  // Veículo maior e centralizado: o card agora fica inteiramente dedicado à imagem.
   if (vehicleMode == MODE_HOLOGRAMA) {
-    drawCarSilhouette(ox, oy, 1.0f);
+    drawCarSilhouette(x + 11, y + 35, 1.02f);
   } else {
-    canvas.fillRoundRect(ox + 10, oy + 4, 125, 48, 6, 0x1084);
-    canvas.drawRoundRect(ox + 10, oy + 4, 125, 48, 6, currentThemeHex);
-    
-    canvas.drawRect(ox + 30, oy + 16, 24, 18, C_TEXT_WHITE);
-    canvas.fillCircle(ox + 36, oy + 22, 3, currentThemeHex);
-    canvas.fillTriangle(ox + 32, oy + 32, ox + 42, oy + 24, ox + 50, oy + 32, C_TEXT_MUTED);
-
+    const int imageW = 137;
+    const int imageH = 62;
+    const int imageX = x + (w - imageW) / 2;
+    const int imageY = y + 29;
+    canvas.fillRoundRect(imageX, imageY, imageW, imageH, 6, 0x1084);
+    canvas.drawRoundRect(imageX, imageY, imageW, imageH, 6, currentThemeHex);
+    canvas.drawRect(imageX + 24, imageY + 18, 28, 20, C_TEXT_WHITE);
+    canvas.fillCircle(imageX + 31, imageY + 25, 3, currentThemeHex);
+    canvas.fillTriangle(imageX + 27, imageY + 37, imageX + 39, imageY + 27, imageX + 49, imageY + 37, C_TEXT_MUTED);
     canvas.setTextColor(C_TEXT_WHITE, 0x1084);
     canvas.setTextSize(1);
-    canvas.setCursor(ox + 60, oy + 22);
-    canvas.print("FOTO / GIF");
+    canvas.setCursor(imageX + 66, imageY + 27);
+    canvas.print("IMAGEM");
   }
-
-  char sBuf[32];
-  canvas.setTextColor(C_TEXT_MUTED, C_CARD_BG);
-  canvas.setTextSize(1);
-  sprintf(sBuf, "RPM %04d", rpm);
-  canvas.setCursor(x + 10, y + 92); canvas.print(sBuf);
-
-  sprintf(sBuf, "SPD %03d", speedKmh);
-  canvas.setCursor(x + 95, y + 92); canvas.print(sBuf);
 
   if (holdingCarCard) {
     unsigned long heldTime = millis() - touchStartTime;
@@ -1036,7 +1049,7 @@ void renderVehicleCard() {
 }
 
 void renderAudioCard() {
-  int x = 161, y = 126, w = 157, h = 111;
+  int x = 161, y = 121, w = 158, h = 117;
   drawHUDCard(x, y, w, h, "AUDIO VISUALIZER", NULL);
 
   int startX = x + 8;
@@ -1090,32 +1103,25 @@ void renderFullscreenCarScreen() {
   canvas.setCursor(15, 14);
   canvas.print("VEHICLE PROFILE // 360 FULLSCREEN");
 
+  // Sem preset, RPM ou velocidade: a tela cheia prioriza apenas a imagem centralizada.
   if (vehicleMode == MODE_HOLOGRAMA) {
-    drawCarSilhouette(50, 60, 1.6f);
+    drawCarSilhouette(30, 74, 1.9f);
   } else {
-    canvas.fillRoundRect(40, 50, 240, 120, 8, 0x1084);
-    canvas.drawRoundRect(40, 50, 240, 120, 8, currentThemeHex);
+    const int imageW = 296;
+    const int imageH = 166;
+    const int imageX = (320 - imageW) / 2;
+    const int imageY = 38;
+    canvas.fillRoundRect(imageX, imageY, imageW, imageH, 8, 0x1084);
+    canvas.drawRoundRect(imageX, imageY, imageW, imageH, 8, currentThemeHex);
     canvas.setTextColor(C_TEXT_WHITE, 0x1084);
     canvas.setTextSize(2);
-    canvas.setCursor(80, 100);
-    canvas.print("FOTO / GIF FULL");
+    canvas.setCursor(112, 116);
+    canvas.print("IMAGEM");
   }
 
-  canvas.drawFastHLine(15, 182, 290, C_BORDER_DARK);
-
-  canvas.setTextColor(C_TEXT_WHITE, 0x0000);
-  canvas.setTextSize(1);
-  canvas.setCursor(20, 192);
-  canvas.print("PRESET: Civic 1999 Sedan (EJ/EK)");
-
-  char teleBuf[32];
-  sprintf(teleBuf, "RPM: %04d | SPD: %03d km/h", rpm, speedKmh);
-  canvas.setTextColor(currentThemeHex, 0x0000);
-  canvas.setCursor(20, 206);
-  canvas.print(teleBuf);
-
   canvas.setTextColor(C_TEXT_MUTED, 0x0000);
-  canvas.setCursor(20, 220);
+  canvas.setTextSize(1);
+  canvas.setCursor(70, 218);
   canvas.print("[ TOQUE EM QUALQUER LUGAR PARA SAIR ]");
 }
 
@@ -1195,14 +1201,14 @@ void renderSettingsScreen() {
     canvas.drawRoundRect(configX, tabY, configW, tabH, 6, tempSelectedHex);
   }
   canvas.setTextColor(activeTab == TAB_CONFIGURACOES ? C_TEXT_WHITE : C_TEXT_MUTED, activeTab == TAB_CONFIGURACOES ? C_CARD_BG : C_MENU_BG);
-  canvas.setCursor(126, 38); canvas.print("Configurações");
+  canvas.setCursor(126, 38); canvas.print("Configuracoes");
 
   if (activeTab == TAB_ATUALIZACAO) {
     canvas.fillRoundRect(updateX, tabY, updateW, tabH, 6, C_CARD_BG);
     canvas.drawRoundRect(updateX, tabY, updateW, tabH, 6, tempSelectedHex);
   }
   canvas.setTextColor(activeTab == TAB_ATUALIZACAO ? C_TEXT_WHITE : C_TEXT_MUTED, activeTab == TAB_ATUALIZACAO ? C_CARD_BG : C_MENU_BG);
-  canvas.setCursor(235, 38); canvas.print("Atualização");
+  canvas.setCursor(235, 38); canvas.print("Atualizacao");
 
   canvas.drawFastHLine(0, 58, 320, C_BORDER_DARK);
 
@@ -1308,47 +1314,70 @@ void renderSettingsScreen() {
     canvas.setTextSize(1);
     canvas.drawFastHLine(10, sy + 60, 300, C_BORDER_DARK);
 
+    // A linha fica com uma margem igual acima e abaixo, sem encostar no cartão Wi-Fi nem no próximo título.
+    canvas.drawFastHLine(10, sy + 164, 300, C_BORDER_DARK);
+
     const uint16_t manualTimeColor = networkReady ? C_TEXT_MUTED : C_TEXT_WHITE;
     const uint16_t manualTimeBorder = networkReady ? C_BORDER_DARK : tempSelectedHex;
     canvas.setTextColor(manualTimeColor, C_MENU_BG);
-    canvas.setCursor(10, sy + 166);
+    canvas.setCursor(10, sy + 176);
     canvas.print(networkReady ? "# HORA PELA REDE WI-FI (BLOQUEADA)" : "# AJUSTE MANUAL DE HORA (HH:MM)");
 
     // Controles afastados do título para a leitura não ficar apertada.
-    canvas.fillRoundRect(105, sy + 189, 110, 36, 6, C_CARD_BG);
-    canvas.drawRoundRect(105, sy + 189, 110, 36, 6, manualTimeBorder);
+    canvas.fillRoundRect(105, sy + 199, 110, 36, 6, C_CARD_BG);
+    canvas.drawRoundRect(105, sy + 199, 110, 36, 6, manualTimeBorder);
 
     char timeEditBuf[16];
     sprintf(timeEditBuf, "%02d:%02d", manualHour, manualMinute);
     canvas.setTextColor(networkReady ? C_TEXT_MUTED : tempSelectedHex, C_MENU_BG);
     canvas.setTextSize(2);
-    canvas.setCursor(127, sy + 199);
+    canvas.setCursor(127, sy + 209);
     canvas.print(timeEditBuf);
     canvas.setTextSize(1);
 
-    canvas.fillRoundRect(45, sy + 189, 36, 17, 4, C_CARD_BG);
-    canvas.drawRoundRect(45, sy + 189, 36, 17, 4, C_BORDER_DARK);
+    canvas.fillRoundRect(45, sy + 199, 36, 17, 4, C_CARD_BG);
+    canvas.drawRoundRect(45, sy + 199, 36, 17, 4, C_BORDER_DARK);
     canvas.setTextColor(C_TEXT_WHITE, C_CARD_BG);
-    canvas.setCursor(59, sy + 194); canvas.print("^");
+    canvas.setCursor(59, sy + 204); canvas.print("^");
 
-    canvas.fillRoundRect(45, sy + 208, 36, 17, 4, C_CARD_BG);
-    canvas.drawRoundRect(45, sy + 208, 36, 17, 4, C_BORDER_DARK);
-    canvas.setCursor(59, sy + 213); canvas.print("v");
+    canvas.fillRoundRect(45, sy + 218, 36, 17, 4, C_CARD_BG);
+    canvas.drawRoundRect(45, sy + 218, 36, 17, 4, C_BORDER_DARK);
+    canvas.setCursor(59, sy + 223); canvas.print("v");
 
-    canvas.fillRoundRect(239, sy + 189, 36, 17, 4, C_CARD_BG);
-    canvas.drawRoundRect(239, sy + 189, 36, 17, 4, C_BORDER_DARK);
+    canvas.fillRoundRect(239, sy + 199, 36, 17, 4, C_CARD_BG);
+    canvas.drawRoundRect(239, sy + 199, 36, 17, 4, C_BORDER_DARK);
     canvas.setTextColor(C_TEXT_WHITE, C_CARD_BG);
-    canvas.setCursor(253, sy + 194); canvas.print("^");
+    canvas.setCursor(253, sy + 204); canvas.print("^");
 
-    canvas.fillRoundRect(239, sy + 208, 36, 17, 4, C_CARD_BG);
-    canvas.drawRoundRect(239, sy + 208, 36, 17, 4, C_BORDER_DARK);
-    canvas.setCursor(253, sy + 213); canvas.print("v");
+    canvas.fillRoundRect(239, sy + 218, 36, 17, 4, C_CARD_BG);
+    canvas.drawRoundRect(239, sy + 218, 36, 17, 4, C_BORDER_DARK);
+    canvas.setCursor(253, sy + 223); canvas.print("v");
 
     canvas.setTextColor(C_TEXT_MUTED, C_MENU_BG);
-    canvas.setCursor(48, sy + 230);
+    canvas.setCursor(48, sy + 240);
     canvas.print("HORA");
-    canvas.setCursor(241, sy + 230);
+    canvas.setCursor(241, sy + 240);
     canvas.print("MINUTO");
+
+    canvas.drawFastHLine(10, sy + 254, 300, C_BORDER_DARK);
+    canvas.setTextColor(C_TEXT_WHITE, C_MENU_BG);
+    canvas.setCursor(10, sy + 268);
+    canvas.print("# BOTAO MENU NO PAINEL");
+    canvas.fillRoundRect(10, sy + 280, 300, 34, 6, C_CARD_BG);
+    canvas.drawRoundRect(10, sy + 280, 300, 34, 6, menuButtonVisible ? tempSelectedHex : C_BORDER_DARK);
+    canvas.setTextColor(menuButtonVisible ? C_TEXT_WHITE : C_TEXT_MUTED, C_CARD_BG);
+    canvas.setCursor(24, sy + 292);
+    canvas.print(menuButtonVisible ? "VISIVEL" : "OCULTO");
+    canvas.setTextColor(C_TEXT_MUTED, C_CARD_BG);
+    canvas.setCursor(112, sy + 292);
+    canvas.print("TOQUE PARA ALTERAR");
+
+    canvas.drawFastHLine(10, sy + 322, 300, C_BORDER_DARK);
+    canvas.fillRoundRect(10, sy + 334, 300, 34, 6, C_CARD_BG);
+    canvas.drawRoundRect(10, sy + 334, 300, 34, 6, C_RED_ACTIVE);
+    canvas.setTextColor(C_TEXT_WHITE, C_CARD_BG);
+    canvas.setCursor(74, sy + 346);
+    canvas.print("TESTAR NOTIFICACAO DE ATUALIZACAO");
   }
 
   if (activeTab == TAB_PERSONALIZACAO) {
@@ -1454,8 +1483,15 @@ void renderSettingsScreen() {
     canvas.setCursor(76, 153);
     canvas.print("VERIFICAR E ATUALIZAR");
     canvas.setTextColor(C_TEXT_MUTED, C_CARD_BG);
-    canvas.setCursor(58, 169);
-    canvas.print("URL .BIN CONFIGURADA NO CODIGO");
+    canvas.setCursor(32, 169);
+    if (otaCheckComplete && otaLatestVersion.length()) {
+      canvas.print("INSTALADA ");
+      canvas.print(HONDAPP_FIRMWARE_VERSION);
+      canvas.print("  /  DISPONIVEL ");
+      canvas.print(otaLatestVersion);
+    } else {
+      canvas.print(otaStatus);
+    }
   }
 
   canvas.clearClipRect();
@@ -1473,7 +1509,7 @@ void renderSettingsScreen() {
 
   canvas.setTextColor(C_TEXT_MUTED, C_MENU_BG);
   canvas.setCursor(10, 215);
-  canvas.print("By PH");
+  canvas.print("HONDAPP");
 
   canvas.fillRoundRect(126, 208, 55, 24, 6, C_BTN_GRAY);
   canvas.drawRoundRect(126, 208, 55, 24, 6, C_BORDER_DARK);
@@ -1514,10 +1550,11 @@ void handleTouchEvents() {
         touchStartTime = millis();
         longPressTriggered = false;
 
-        if (startTouchX >= 2 && startTouchX <= 157 && startTouchY >= 126 && startTouchY <= 237) {
+        if (startTouchX >= 1 && startTouchX <= 159 && startTouchY >= 121 && startTouchY <= 238) {
           holdingCarCard = true;
         }
       } else {
+        lastTouchY = touchY;
         if (holdingCarCard && !longPressTriggered) {
           if (millis() - touchStartTime > 1000) {
             longPressTriggered = true;
@@ -1539,29 +1576,38 @@ void handleTouchEvents() {
       if (touchPressed) {
         holdingCarCard = false;
         if (!longPressTriggered) {
-          if (startTouchY <= 25 && startTouchX >= 100 && startTouchX <= 220) {
+          // O aviso fica sobre o cartão de clima, por isso é tratado antes do toque normal do painel.
+          if (testUpdateNoticeVisible && startTouchX >= 154 && startTouchX <= 312 && startTouchY >= 18 && startTouchY <= 60) {
+            currentState = STATE_SETTINGS;
+            activeTab = TAB_ATUALIZACAO;
+            scrollY = 0;
+            tempSelectedHex = currentThemeHex;
+            testUpdateNoticeVisible = false;
+          }
+          else if ((menuButtonVisible && startTouchY <= 25 && startTouchX >= 100 && startTouchX <= 220) ||
+                   (startTouchY <= 28 && (int)lastTouchY - (int)startTouchY >= 30)) {
+            // O botão flutua sobre o HUD; quando ele está oculto, o mesmo menu abre puxando a faixa superior para baixo.
             currentState = STATE_SETTINGS;
             tempSelectedHex = currentThemeHex;
-            
             time_t now = time(nullptr);
             struct tm *tmNow = localtime(&now);
             manualHour = tmNow->tm_hour;
             manualMinute = tmNow->tm_min;
           }
-          else if (startTouchX >= 2 && startTouchX <= 157 && startTouchY >= 14 && startTouchY <= 124) {
+          else if (startTouchX >= 1 && startTouchX <= 159 && startTouchY >= 2 && startTouchY <= 118) {
             timeFormat = (timeFormat == TIME_12H) ? TIME_24H : TIME_12H;
             saveSettings();
             delay(120);
           }
-          else if (startTouchX >= 161 && startTouchX <= 318 && startTouchY >= 14 && startTouchY <= 124) {
+          else if (startTouchX >= 161 && startTouchX <= 319 && startTouchY >= 2 && startTouchY <= 118) {
             tempUnit = (tempUnit == TEMP_CELSIUS) ? TEMP_FAHRENHEIT : TEMP_CELSIUS;
             saveSettings();
             delay(120);
           }
-          else if (startTouchX >= 2 && startTouchX <= 157 && startTouchY >= 126 && startTouchY <= 237) {
+          else if (startTouchX >= 1 && startTouchX <= 159 && startTouchY >= 121 && startTouchY <= 238) {
             currentState = STATE_FULLSCREEN_CAR;
           }
-          else if (startTouchX >= 161 && startTouchX <= 318 && startTouchY >= 210 && startTouchY <= 235) {
+          else if (startTouchX >= 161 && startTouchX <= 319 && startTouchY >= 205 && startTouchY <= 220) {
             audioSource = (audioSource == AUDIO_SRC_SIM) ? AUDIO_SRC_MIC : AUDIO_SRC_SIM;
             if (audioSource == AUDIO_SRC_MIC) {
               startMicrophone();
@@ -1683,16 +1729,16 @@ void handleTouchEvents() {
               }
 
               // Com Wi-Fi conectado, a hora vem da rede e os controles manuais ficam bloqueados.
-              if (!networkReady && contentY >= 189 && contentY <= 229) {
+              if (!networkReady && contentY >= 199 && contentY <= 239) {
                 if (startTouchX >= 45 && startTouchX <= 81) {
-                  if (contentY <= 207) {
+                  if (contentY <= 217) {
                     manualHour = (manualHour == 23) ? 0 : manualHour + 1;
                   } else {
                     manualHour = (manualHour == 0) ? 23 : manualHour - 1;
                   }
                 } 
                 else if (startTouchX >= 239 && startTouchX <= 275) {
-                  if (contentY <= 207) {
+                  if (contentY <= 217) {
                     manualMinute = (manualMinute == 59) ? 0 : manualMinute + 1;
                   } else {
                     manualMinute = (manualMinute == 0) ? 59 : manualMinute - 1;
@@ -1724,12 +1770,22 @@ void handleTouchEvents() {
               if (contentY >= 110 && contentY <= 152) {
                 startWiFiReconfiguration();
               }
+              if (contentY >= 280 && contentY <= 314) {
+                menuButtonVisible = !menuButtonVisible;
+              }
+              if (contentY >= 334 && contentY <= 368) {
+                // Prévia local: não consulta o GitHub nem inicia download OTA.
+                testUpdateNoticeVisible = true;
+                testUpdateNoticeUntil = millis() + 6000UL;
+                currentState = STATE_HUD;
+              }
             }
 
             if (activeTab == TAB_ATUALIZACAO) {
-              // Botão OTA: só inicia com Wi-Fi já conectado, para não prender a tela tentando adivinhar uma rede.
+              // Primeiro toque consulta o Release; só baixa quando existe uma versão realmente mais nova.
               if (startTouchX >= 18 && startTouchX <= 302 && startTouchY >= 142 && startTouchY <= 184) {
-                performOTAUpdate();
+                checkForFirmwareUpdate(true);
+                if (otaUpdateAvailable) performOTAUpdate();
               }
             }
           }
@@ -1758,6 +1814,9 @@ void setup() {
   tft.setRotation(3);
   tft.setBrightness(screenBrightness);
 
+  // Este painel usa o alvo ESP32-S3 N16R8: 16 MB de flash com duas áreas OTA
+  // e 8 MB de PSRAM. O framebuffer sai da RAM interna e deixa espaço para HTTPS.
+  if (psramFound()) canvas.setPsram(true);
   canvas.createSprite(320, 240);
 
   struct tm t_compile = {0};
@@ -1800,6 +1859,7 @@ void loop() {
       renderBootScreen();
       if (now - bootStartTime >= 3000) {
         currentState = STATE_HUD;
+        // A consulta OTA começa depois da conexão Wi-Fi e mostra o cartão apenas se houver Release novo.
         requestRedraw();
       }
     } else if (currentState == STATE_HUD) {
@@ -1809,7 +1869,10 @@ void loop() {
       renderClimateCard();
       renderVehicleCard();
       renderAudioCard();
-      drawTopMenuTab();
+      // O botão é desenhado por último, flutuando sobre os cartões sem deslocá-los.
+      if (menuButtonVisible) drawTopMenuTab();
+      // O aviso vem por último, sobre o painel já pronto; assim o fundo não o apaga.
+      drawTestUpdateNotice();
     } else if (currentState == STATE_FULLSCREEN_CAR) {
       renderFullscreenCarScreen();
     } else if (currentState == STATE_SETTINGS) {

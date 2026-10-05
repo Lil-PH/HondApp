@@ -829,7 +829,7 @@ void drawTestUpdateNotice() {
 void renderDriverCard() {
   // Quatro cartões com a mesma área: 158 × 117 px, separados por uma folga de 2 px.
   int x = 1, y = 2, w = 158, h = 117;
-  drawHUDCard(x, y, w, h, "CIVIC // DRIVER INTE...", NULL);
+  drawHUDCard(x, y, w, h, "CIVIC", NULL);
 
   time_t now = time(nullptr);
   struct tm *tmNow = localtime(&now);

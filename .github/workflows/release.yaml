@@ -1,4 +1,4 @@
-name: HondApp - OTA automatico
+name: HondApp - Atualizacao
 
 on:
   push:
@@ -37,8 +37,8 @@ jobs:
       - name: Criar Release e publicar OTA
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ota-${{ github.run_number }}
-          name: HondApp OTA ${{ github.run_number }}
+          tag_name: v${{ github.run_number }}
+          name: HondApp v${{ github.run_number }}
           target_commitish: ${{ github.sha }}
           make_latest: true
           generate_release_notes: true

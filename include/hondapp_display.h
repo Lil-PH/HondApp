@@ -37,6 +37,7 @@ public:
       config.offset_rotation = 0;
       config.readable = true;
       config.invert = true;
+      // Mantém a ordem RGB: a troca para BGR alterou toda a paleta planejada do painel.
       config.rgb_order = false;
       config.dlen_16bit = false;
       config.bus_shared = false;

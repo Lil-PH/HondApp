@@ -23,10 +23,14 @@ constexpr int I2S_DIN = 6;
 constexpr int I2S_MCLK = 4;
 constexpr int AUDIO_ENABLE = 1;
 
+// Rede temporária de configuração exibida na tela da placa.
+constexpr char HONDAPP_SETUP_SSID[] = "HondApp";
+constexpr char HONDAPP_SETUP_PASSWORD[] = "HondApp2026";
+
 enum ScreenState { STATE_BOOT, STATE_HUD, STATE_SETTINGS, STATE_FULLSCREEN_CAR };
-enum BootLogoType { BOOT_HONDA = 0, BOOT_TYPE_R, BOOT_CUSTOM };
+enum BootLogoType { BOOT_HONDA = 0, BOOT_TYPE_R, BOOT_CUSTOM, BOOT_EXTRA1, BOOT_EXTRA2 };
 enum ActiveTab { TAB_PERSONALIZACAO = 0, TAB_CONFIGURACOES, TAB_ATUALIZACAO };
-enum VehicleDisplayMode { MODE_HOLOGRAMA = 0, MODE_FOTO_GIF };
+enum VehicleDisplayMode { MODE_HOLOGRAMA = 0, MODE_FOTO };
 enum TimeFormatMode { TIME_12H = 0, TIME_24H };
 enum TempUnitMode { TEMP_CELSIUS = 0, TEMP_FAHRENHEIT };
 enum AudioSourceMode { AUDIO_SRC_SIM = 0, AUDIO_SRC_MIC };
@@ -40,9 +44,11 @@ constexpr uint16_t C_TEXT_MUTED = 0x7BEF;
 constexpr uint16_t C_BTN_GRAY = 0x18C3;
 constexpr uint16_t C_SILVER = 0xC618;
 constexpr uint16_t C_ORANGE_BOOT = 0xFD00;
-constexpr uint16_t C_RED_ACTIVE = 0xF228;
+// Vermelho puro RGB565 (#FF0000) para Honda Type-R Red.
+constexpr uint16_t C_RED_ACTIVE = 0xF800;
 constexpr uint16_t C_AMBER_JDM = 0xFC00;
-constexpr uint16_t C_CYAN_BLUE = 0x05BA;
+// Azul puro RGB565 (#0000FF) para Cyberpunk Cyan Blue.
+constexpr uint16_t C_CYAN_BLUE = 0x001F;
 constexpr uint16_t C_ACID_GREEN = 0x07E0;
 constexpr uint16_t C_PURPLE_NEON = 0xA2BF;
 constexpr uint16_t C_SPOON_AQUA = 0x073F;

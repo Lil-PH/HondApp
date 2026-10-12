@@ -14,6 +14,7 @@
 #include <WiFiManager.h>
 #include <Update.h>
 #include <esp_ota_ops.h>
+#include <AnimatedGIF.h>
 #include "settings_store.h"
 #include "hondapp_config.h"
 #include "hondapp_display.h"
@@ -53,6 +54,7 @@ void renderBootScreen();
 void drawCarSilhouette(int ox, int oy, float scale);
 void drawHUDCard(int x, int y, int w, int h, const char* titleLeft, const char* titleRight);
 void drawTopMenuTab();
+void drawTestUpdateNoticeOnDisplay();
 void renderDriverCard();
 void drawTemperatureValue(int x, int y, float value, TempUnitMode unit);
 void drawWiFiStatusIcon(int centerX, int centerY, bool connected);
@@ -60,6 +62,7 @@ void renderClimateCard();
 void renderVehicleCard();
 void renderAudioCard();
 void renderAudioDynamics();
+void renderClockDynamics();
 void renderFullscreenCarScreen();
 void renderSettingsScreen();
 void handleTouchEvents();
@@ -70,6 +73,9 @@ LGFX_Sprite canvas(&tft);
 // Só a parte que muda do visualizador é enviada a cada quadro. Assim a foto e
 // os três outros cartões não atravessam o SPI novamente 20 vezes por segundo.
 LGFX_Sprite audioDynamics(&tft);
+// O relógio também muda sozinho. Este sprite evita reenviar os quatro cartões
+// apenas para trocar os segundos uma vez por segundo.
+LGFX_Sprite clockDynamics(&tft);
 
 // ============================================================
 // ESTADOS E CONTROLES DO SISTEMA
@@ -191,6 +197,11 @@ static bool displayNeedsRedraw = true;
 // A interface volta primeiro ao painel; a gravação ocorre logo depois, sem atrasar
 // a confirmação visual do botão SALVAR E APLICAR.
 static bool settingsSavePending = false;
+// Escritas na memoria permanente e decodificacao do GIF nunca devem disputar o
+// mesmo instante de um toque. O painel confirma primeiro e conclui essas tarefas
+// logo depois de a pessoa soltar o dedo.
+static unsigned long settingsSaveDueAt = 0;
+static unsigned long interactionPriorityUntil = 0;
 static unsigned long lastRenderAt = 0;
 // O relógio é estático entre os quadros do áudio, mas recebe um quadro completo
 // a cada segundo para os segundos, minutos e hora nunca parecerem congelados.
@@ -216,6 +227,12 @@ static uint8_t bootMediaPreloadStage = 0;
 // O teste das Configurações usa o mesmo cartão, mas desaparece sozinho após seis segundos.
 static bool testUpdateNoticeVisible = false;
 static unsigned long testUpdateNoticeUntil = 0;
+// A consulta de OTA pode terminar durante a abertura. Neste caso o aviso espera
+// o primeiro HUD pronto e então permanece visível pelos seis segundos completos.
+static bool otaNoticePendingForHud = false;
+// A logo EXTRA é preparada antes de acender a tela. Assim nunca aparece uma
+// logo Honda provisória: Honda só é usada quando não há arquivo EXTRA válido.
+static bool bootLogoPreloadRequested = false;
 
 // A localização começa em Serra, ES somente até a primeira consulta pela rede.
 // Depois, cidade, coordenadas e diferença de horário são lembradas na placa.
@@ -251,8 +268,10 @@ static int getSettingsMaxScroll() {
     // vazia que possa ser arrastada como se a aba continuasse indefinidamente.
     int bootSectionY = 288;
     if (vehicleMode == MODE_FOTO) {
-      if (VehicleMedia::exists()) bootSectionY = 342;
-      else if (VehicleMedia::uploadNetworkActive()) bootSectionY = 310;
+      // Com o botão REMOVER visível, a divisória fica abaixo dele, com uma
+      // folga visível antes do título da tela de inicialização.
+      if (VehicleMedia::exists()) bootSectionY = 322;
+      else if (VehicleMedia::uploadNetworkActive()) bootSectionY = 326;
     }
     // O envio e o aviso ocupam espaço somente para a logo EXTRA atualmente escolhida.
     const bool extraLogoSelected = bootMode == BOOT_EXTRA1 || bootMode == BOOT_EXTRA2;
@@ -681,8 +700,9 @@ void checkForFirmwareUpdate(bool force) {
       // O download usa a tag encontrada, não /latest, portanto baixa exatamente
       // o main.cpp.bin da versão cuja notificação foi mostrada.
       otaFirmwareUrl = "https://github.com/Lil-PH/HondApp/releases/download/" + otaLatestVersion + "/main.cpp.bin";
-      testUpdateNoticeVisible = otaUpdateAvailable;
-      if (otaUpdateAvailable) testUpdateNoticeUntil = millis() + 6000UL;
+      // Nunca inicia os seis segundos enquanto a tela de abertura ainda está
+      // visível: a notificação começa somente depois do dashboard aparecer.
+      if (otaUpdateAvailable) otaNoticePendingForHud = true;
     } else {
       otaStatus = "NENHUMA ATUALIZACAO DISPONIVEL";
     }
@@ -785,8 +805,34 @@ void maintainOnlineServices() {
   }
 }
 
+// Estado da tela OTA: a moldura e os textos estáticos são desenhados uma vez.
+// Durante o download, somente a barra e a porcentagem recebem novos pixels.
+static int otaDisplayedPercent = -1;
+
+static void drawOTAProgress(int percent) {
+  if (percent < 0) return;
+  if (percent > 100) percent = 100;
+  if (percent == otaDisplayedPercent) return;
+
+  // Mantém a moldura da barra e todo o restante da tela intactos.
+  tft.fillRect(30, 142, 260, 10, C_MENU_BG);
+  const int fillWidth = (260 * percent) / 100;
+  if (fillWidth > 0) tft.fillRoundRect(30, 142, fillWidth, 10, 5, currentThemeHex);
+
+  // Limpa somente o retângulo do número para 100% não deixar um dígito antigo.
+  tft.fillRect(132, 160, 56, 14, C_MENU_BG);
+  char progress[12];
+  snprintf(progress, sizeof(progress), "%d%%", percent);
+  tft.setTextColor(C_TEXT_WHITE, C_MENU_BG);
+  tft.setTextSize(1);
+  tft.setCursor(145, 166);
+  tft.print(progress);
+  otaDisplayedPercent = percent;
+}
+
 // Tela direta usada durante a atualização: o canvas normal fica parado enquanto o .bin é gravado.
 static void drawOTAStatus(const char* line1, const char* line2, int percent = -1) {
+  otaDisplayedPercent = -1;
   tft.fillScreen(C_MENU_BG);
   tft.drawRoundRect(12, 16, 296, 208, 8, currentThemeHex);
   tft.setTextColor(C_TEXT_WHITE, C_MENU_BG);
@@ -797,13 +843,8 @@ static void drawOTAStatus(const char* line1, const char* line2, int percent = -1
   tft.setTextColor(C_TEXT_MUTED, C_MENU_BG);
   tft.setCursor(28, 106); tft.print(line2);
   if (percent >= 0) {
-    if (percent > 100) percent = 100;
     tft.drawRoundRect(28, 140, 264, 14, 6, C_BORDER_DARK);
-    tft.fillRoundRect(30, 142, ((260 * percent) / 100), 10, 5, currentThemeHex);
-    char progress[12];
-    sprintf(progress, "%d%%", percent);
-    tft.setTextColor(C_TEXT_WHITE, C_MENU_BG);
-    tft.setCursor(145, 166); tft.print(progress);
+    drawOTAProgress(percent);
   }
 }
 
@@ -883,7 +924,8 @@ void performOTAUpdate() {
       if (readBytes == 0 || Update.write(buffer, readBytes) != readBytes) break;
       totalWritten += readBytes;
       const int percent = (int)((totalWritten * 100UL) / contentLength);
-      drawOTAStatus("BAIXANDO ATUALIZACAO...", "ATUALIZANDO SISTEMA - NAO DESLIGUE", percent);
+      // Não limpa nem retransmite a tela inteira: atualiza só o progresso visível.
+      drawOTAProgress(percent);
     }
     delay(1);
   }
@@ -998,8 +1040,8 @@ void renderBootScreen() {
   else logoColor = currentThemeHex;
 
   if (bootMode == BOOT_EXTRA1 || bootMode == BOOT_EXTRA2) {
-    // Cada logo EXTRA é independente no microSD. Sem cartão, arquivo salvo ou
-    // leitura válida, a abertura usa Honda para nunca ficar vazia.
+    // A imagem já foi decodificada antes do backlight ligar. Só cai para Honda
+    // quando o arquivo EXTRA não existe, está corrompido ou não foi reconhecido.
     const bool drawn = bootMode == BOOT_EXTRA1
       ? VehicleMedia::drawBootLogo(canvas, 60, 4, 200, 145)
       : VehicleMedia::drawBootLogo2(canvas, 60, 4, 200, 145);
@@ -1121,6 +1163,24 @@ void drawTestUpdateNotice() {
   canvas.setTextColor(C_TEXT_MUTED, C_CARD_BG);
   canvas.setCursor(x + 22, y + 26);
   canvas.print("TOQUE PARA ATUALIZAR");
+}
+
+// O relógio é atualizado por um sprite pequeno e encosta na borda esquerda do
+// aviso. Enquanto a notificação existir, ela é redesenhada diretamente depois
+// de cada atualização parcial, para continuar inteira sem redesenhar o HUD todo.
+void drawTestUpdateNoticeOnDisplay() {
+  if (!testUpdateNoticeVisible) return;
+  const int x = 154, y = 18, w = 158, h = 42;
+  tft.fillRoundRect(x, y, w, h, 5, C_CARD_BG);
+  tft.drawRoundRect(x, y, w, h, 5, C_RED_ACTIVE);
+  tft.fillCircle(x + 12, y + 12, 4, C_RED_ACTIVE);
+  tft.setTextColor(C_TEXT_WHITE, C_CARD_BG);
+  tft.setTextSize(1);
+  tft.setCursor(x + 22, y + 8);
+  tft.print("NOVA ATUALIZACAO");
+  tft.setTextColor(C_TEXT_MUTED, C_CARD_BG);
+  tft.setCursor(x + 22, y + 26);
+  tft.print("TOQUE PARA ATUALIZAR");
 }
 
 void renderDriverCard() {
@@ -1306,7 +1366,9 @@ void renderVehicleCard() {
     const int imageX = x + (w - imageW) / 2;
     const int imageY = y + 22;
     canvas.fillRoundRect(imageX, imageY, imageW, imageH, 6, 0x0000);
-    if (VehicleMedia::exists()) {
+    if (VehicleMedia::gifTestExists()) {
+      VehicleMedia::drawGifTest(canvas, imageX, imageY, imageW, imageH);
+    } else if (VehicleMedia::exists()) {
       VehicleMedia::draw(canvas, imageX, imageY, imageW, imageH);
     } else {
       canvas.drawRoundRect(imageX, imageY, imageW, imageH, 6, currentThemeHex);
@@ -1425,6 +1487,56 @@ void renderAudioDynamics() {
   }
 }
 
+// Atualiza somente a área variável do relógio, sem tocar na moldura do cartão.
+void renderClockDynamics() {
+  constexpr int w = 152;
+  clockDynamics.fillScreen(C_CARD_BG);
+  const time_t now = time(nullptr);
+  const struct tm *tmNow = localtime(&now);
+  char timeStr[12], secStr[4], amPmStr[3] = "", dateStr[32];
+  if (timeFormat == TIME_12H) {
+    int h12 = tmNow->tm_hour % 12;
+    if (h12 == 0) h12 = 12;
+    snprintf(amPmStr, sizeof(amPmStr), "%s", tmNow->tm_hour >= 12 ? "PM" : "AM");
+    snprintf(timeStr, sizeof(timeStr), "%02d:%02d", h12, tmNow->tm_min);
+  } else {
+    snprintf(timeStr, sizeof(timeStr), "%02d:%02d", tmNow->tm_hour, tmNow->tm_min);
+  }
+  snprintf(secStr, sizeof(secStr), "%02d", tmNow->tm_sec);
+  const char *weekDays[] = {"SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"};
+  const char *months[] = {"JANUARY", "FEBRUARY", "MARCH", "APRIL", "MAY", "JUNE", "JULY", "AUGUST", "SEPTEMBER", "OCTOBER", "NOVEMBER", "DECEMBER"};
+  snprintf(dateStr, sizeof(dateStr), "%s %d %s %d", weekDays[tmNow->tm_wday], tmNow->tm_mday, months[tmNow->tm_mon], tmNow->tm_year + 1900);
+
+  clockDynamics.setTextSize(1);
+  clockDynamics.setTextColor(currentThemeHex, C_CARD_BG);
+  clockDynamics.setCursor((w - 11 * 6) / 2, 4);
+  clockDynamics.print("TIME / DATE");
+  const int timeWidth = strlen(timeStr) * 18;
+  int timeX = (w - timeWidth) / 2 - 8;
+  if (timeX < 1) timeX = 1;
+  clockDynamics.setTextColor(C_TEXT_WHITE, C_CARD_BG);
+  clockDynamics.setTextSize(3);
+  clockDynamics.setCursor(timeX, 18);
+  clockDynamics.print(timeStr);
+  const int secondsX = timeX + timeWidth + 3;
+  clockDynamics.setTextColor(currentThemeHex, C_CARD_BG);
+  clockDynamics.setTextSize(1);
+  clockDynamics.setCursor(secondsX, 26);
+  clockDynamics.print(secStr);
+  if (timeFormat == TIME_12H) {
+    clockDynamics.setTextColor(C_TEXT_MUTED, C_CARD_BG);
+    clockDynamics.setCursor(secondsX + 15, 26);
+    clockDynamics.print(amPmStr);
+  }
+  clockDynamics.drawFastHLine(9, 48, 131, C_BORDER_DARK);
+  clockDynamics.fillCircle(75, 48, 3, currentThemeHex);
+  int dateX = (w - strlen(dateStr) * 6) / 2;
+  if (dateX < 1) dateX = 1;
+  clockDynamics.setTextColor(C_TEXT_WHITE, C_CARD_BG);
+  clockDynamics.setCursor(dateX, 60);
+  clockDynamics.print(dateStr);
+}
+
 void renderFullscreenCarScreen() {
   canvas.fillScreen(0x0000);
 
@@ -1445,7 +1557,9 @@ void renderFullscreenCarScreen() {
     const int imageX = (320 - imageW) / 2;
     const int imageY = 38;
     canvas.fillRoundRect(imageX, imageY, imageW, imageH, 8, 0x0000);
-    if (VehicleMedia::exists()) {
+    if (VehicleMedia::gifTestExists()) {
+      VehicleMedia::drawGifTest(canvas, imageX, imageY, imageW, imageH);
+    } else if (VehicleMedia::exists()) {
       VehicleMedia::draw(canvas, imageX, imageY, imageW, imageH);
     } else {
       canvas.drawRoundRect(imageX, imageY, imageW, imageH, 8, currentThemeHex);
@@ -1735,7 +1849,7 @@ void renderSettingsScreen() {
     canvas.fillRoundRect(165, sy + 176, 145, 32, 6, C_CARD_BG);
     canvas.drawRoundRect(165, sy + 176, 145, 32, 6, mFoto ? tempSelectedHex : C_BORDER_DARK);
     canvas.setTextColor(C_TEXT_MUTED, C_CARD_BG);
-    canvas.setCursor(218, sy + 187); canvas.print("FOTO");
+    canvas.setCursor(195, sy + 187); canvas.print("FOTO OU GIF");
     canvas.setTextColor(C_AMBER_JDM, C_MENU_BG);
     canvas.setCursor(171, sy + 214); canvas.print("GIF EM DESENVOLVIMENTO");
 
@@ -1767,15 +1881,15 @@ void renderSettingsScreen() {
         canvas.setCursor(10, sy + 275);
         canvas.print("ABRA: http://");
         canvas.print(VehicleMedia::uploadAddress());
-        bootSectionY = 310;
+        bootSectionY = 326;
       }
       if (VehicleMedia::exists()) {
-        canvas.fillRoundRect(10, sy + 288, 300, 34, 6, C_CARD_BG);
-        canvas.drawRoundRect(10, sy + 288, 300, 34, 6, C_RED_ACTIVE);
+        canvas.fillRoundRect(10, sy + 268, 300, 34, 6, C_CARD_BG);
+        canvas.drawRoundRect(10, sy + 268, 300, 34, 6, C_RED_ACTIVE);
         canvas.setTextColor(C_TEXT_WHITE, C_CARD_BG);
-        canvas.setCursor(112, sy + 300);
-        canvas.print("REMOVER FOTO");
-        bootSectionY = 342;
+        canvas.setCursor(91, sy + 280);
+        canvas.print("REMOVER FOTO OU GIF");
+        bootSectionY = 326;
       }
     }
 
@@ -1939,6 +2053,9 @@ void renderSettingsScreen() {
 void handleTouchEvents() {
   uint16_t touchX, touchY;
   bool isTouching = getTouch(&touchX, &touchY);
+  // Da prioridade ao toque por mais alguns milissegundos apos soltar o dedo.
+  // Nesse intervalo o GIF nao inicia uma decodificacao ou transferencia SPI.
+  if (isTouching || touchPressed) interactionPriorityUntil = millis() + 90UL;
 
   // Um toque simples não retransmite a tela inteira. Durante o pressionar-e-segurar,
   // o progresso visual é atualizado a cada 100 ms, em vez de saturar o SPI com quadros completos.
@@ -2004,13 +2121,16 @@ void handleTouchEvents() {
           }
           else if (startTouchX >= 1 && startTouchX <= 159 && startTouchY >= 2 && startTouchY <= 118) {
             timeFormat = (timeFormat == TIME_12H) ? TIME_24H : TIME_12H;
-            saveSettings();
-            // A troca ocorre no toque; pede também o redesenho completo do cartão estático.
+            // A troca aparece agora; a memoria e gravada quando o toque ja terminou.
+            settingsSavePending = true;
+            settingsSaveDueAt = millis() + 250UL;
             requestRedraw();
           }
           else if (startTouchX >= 161 && startTouchX <= 319 && startTouchY >= 2 && startTouchY <= 118) {
             tempUnit = (tempUnit == TEMP_CELSIUS) ? TEMP_FAHRENHEIT : TEMP_CELSIUS;
-            saveSettings();
+            // A troca aparece agora; a memoria e gravada quando o toque ja terminou.
+            settingsSavePending = true;
+            settingsSaveDueAt = millis() + 250UL;
             // O visualizador atualiza só sua própria área; sem este pedido o cartão de clima não muda na tela.
             requestRedraw();
           }
@@ -2020,6 +2140,7 @@ void handleTouchEvents() {
             // O GIF precisa reabrir com a escala da tela cheia; reutilizar o
             // decodificador do cartão deixaria a origem e o tamanho antigos.
             
+            VehicleMedia::resetGifTest();
             currentState = STATE_FULLSCREEN_CAR;
             vehicleTransitionPending = false;
             vehicleTransitionReadyAt = 0;
@@ -2051,6 +2172,7 @@ void handleTouchEvents() {
         // cartão sem uma tela de carregamento artificial.
         // Ao voltar, reabre o GIF com as dimensões do cartão do dashboard.
         
+        VehicleMedia::resetGifTest();
         currentState = STATE_HUD;
         vehicleTransitionPending = false;
         vehicleTransitionReadyAt = 0;
@@ -2120,6 +2242,7 @@ void handleTouchEvents() {
             if (!networkReady) applyManualTime();
             currentState = STATE_HUD;
             settingsSavePending = true;
+            settingsSaveDueAt = millis() + 150UL;
             requestRedraw();
           }
 
@@ -2201,17 +2324,17 @@ void handleTouchEvents() {
                 }
               }
 
-              if (vehicleMode == MODE_FOTO && contentY >= 288 && contentY <= 322 && VehicleMedia::exists()) {
+              if (vehicleMode == MODE_FOTO && contentY >= 268 && contentY <= 302 && VehicleMedia::exists()) {
                 VehicleMedia::remove();
                 vehicleMode = MODE_HOLOGRAMA;
-                wifiNotice = "FOTO REMOVIDO";
+                wifiNotice = "FOTO OU GIF REMOVIDO";
                 wifiNoticeUntil = millis() + 3000UL;
               }
 
               int bootSectionY = 288;
               if (vehicleMode == MODE_FOTO) {
-                if (VehicleMedia::exists()) bootSectionY = 342;
-                else if (VehicleMedia::uploadNetworkActive()) bootSectionY = 310;
+                if (VehicleMedia::exists()) bootSectionY = 326;
+                else if (VehicleMedia::uploadNetworkActive()) bootSectionY = 326;
               }
               if (contentY >= bootSectionY - 6 && contentY <= bootSectionY + 16 && startTouchX >= 200) {
                 // Prepara a imagem enquanto o menu ainda está na tela. Dessa forma
@@ -2289,17 +2412,15 @@ void setup() {
 
 
   pinMode(TFT_BL, OUTPUT);
-  digitalWrite(TFT_BL, HIGH);
+  // Mantém o LCD apagado enquanto uma logo EXTRA é decodificada do microSD.
+  // Isso evita exibir uma imagem provisória durante a preparação.
+  digitalWrite(TFT_BL, LOW);
 
   pinMode(AUDIO_ENABLE, OUTPUT);
   setAmplifierEnabled(false);
 
   loadSavedSettings();
   VehicleMedia::begin();
-  // Se uma logo EXTRA já estiver selecionada, decodifica-a antes do primeiro
-  // quadro animado. A barra de inicialização passa a usar somente a cópia na PSRAM.
-  if (bootMode == BOOT_EXTRA1) VehicleMedia::preloadBootLogo(200, 145);
-  else if (bootMode == BOOT_EXTRA2) VehicleMedia::preloadBootLogo2(200, 145);
 
   loadSavedLocation(weatherLatitude, weatherLongitude, detectedTimezone, detectedCity);
   // A consulta de rede refina este local assim que houver internet.
@@ -2324,6 +2445,20 @@ void setup() {
   // seletor SIM/MIC permanecem no HUD estático, reduzindo RAM e tráfego SPI.
   audioDynamics.setColorDepth(16);
   const bool audioSpriteReady = audioDynamics.createSprite(142, 48);
+  clockDynamics.setColorDepth(16);
+  const bool clockSpriteReady = clockDynamics.createSprite(152, 70);
+  (void)audioSpriteReady;
+  (void)clockSpriteReady;
+
+  // A logo EXTRA fica pronta antes de a tela ficar visível. O tempo de leitura
+  // não consome os seis segundos da abertura nem troca a imagem por Honda.
+  if (bootMode == BOOT_EXTRA1) VehicleMedia::preloadBootLogo(200, 145);
+  else if (bootMode == BOOT_EXTRA2) VehicleMedia::preloadBootLogo2(200, 145);
+  bootLogoPreloadRequested = true;
+  // A luz de fundo é controlada pelo PWM do LovyanGFX. Não escreva HIGH no
+  // GPIO aqui: isso tomaria o pino do PWM e deixaria a tela permanentemente
+  // no máximo, ignorando o controle de luminosidade do menu.
+  tft.setBrightness(screenBrightness);
 
   struct tm t_compile = {0};
   char monStr[4];
@@ -2352,16 +2487,22 @@ void loop() {
   // Prioriza o toque: serviços de rede não podem atrasar a troca visual de abas.
   handleTouchEvents();
   maintainOnlineServices();
-  VehicleMedia::tick();
-
   const unsigned long now = millis();
+  // O aviso de atualização pode expirar enquanto o HUD só atualiza as áreas
+  // pequenas de áudio e relógio. Peça um quadro completo neste instante para
+  // apagar a caixa sem esperar outro toque na tela.
+  if (testUpdateNoticeVisible && testUpdateNoticeUntil != 0 && now >= testUpdateNoticeUntil) {
+    testUpdateNoticeVisible = false;
+    testUpdateNoticeUntil = 0;
+    requestRedraw();
+  }
   if (vehicleTransitionPending && now >= vehicleTransitionReadyAt) {
     vehicleTransitionPending = false;
     requestRedraw();
   }
   const bool bootAnimating = currentState == STATE_BOOT;
   const bool hudAnimating = currentState == STATE_HUD;
-  const bool fullscreenGifAnimating = false;
+  // Versão de teste: o GIF é redesenhado no canvas durante sua reprodução.
 
   // Usa o tempo da abertura para montar as duas versões proporcionais de
   // JPG/PNG na PSRAM. Cada tamanho é preparado uma única vez; o HUD continua
@@ -2379,32 +2520,49 @@ void loop() {
     }
   }
   // O HUD mantém os cartões estáticos e envia somente o pequeno visualizador.
-  // Vinte quadros por segundo deixam as barras mais suaves sem redesenhar os
-  // cartões de clima, relógio ou veículo.
-  // A abertura usa passos de 5% a cada 300 ms: aparência mais contínua, sem
-  // retransmitir dezenas de telas completas por segundo pelo SPI.
+  // Trinta quadros por segundo deixam as barras visivelmente mais fluidas.
+  // Apenas o sprite de 142 x 48 px é enviado: os cartões, a foto e o aviso
+  // continuam intactos e não precisam ser redesenhados a cada quadro.
+  // A abertura usa passos de 5% a cada 300 ms para não transferir a tela inteira
+  // continuamente. O aviso não divide esta área, então o visualizador mantém a
+  // mesma fluidez durante os seis segundos em que ele aparece.
   const unsigned long frameInterval = bootAnimating ? 300UL :
-                                      ((hudAnimating || fullscreenGifAnimating) ? 50UL : 0UL);
+                                      (hudAnimating ? 33UL : 0UL);
   const bool stateChanged = currentState != lastRenderedState;
   const bool animationDue = frameInterval > 0 && now - lastRenderAt >= frameInterval;
-  // O áudio continua parcial, mas o cartão CIVIC recebe um desenho completo a
-  // cada segundo para renovar hora, minuto e segundos visíveis.
-  const bool clockDue = hudAnimating && now - lastClockRenderAt >= 1000UL;
+  // Enquanto o aviso temporário estiver na tela, o relógio fica congelado por
+  // no máximo seis segundos. Isso impede que seu sprite apague a borda esquerda
+  // da caixa e a obrigue a ser desenhada de novo, que era o piscar percebido.
+  // As barras continuam em outro cartão e podem atualizar normalmente.
+  const bool clockDue = hudAnimating && !testUpdateNoticeVisible &&
+                        now - lastClockRenderAt >= 1000UL;
 
   // Depois do retorno imediato da aba, entrega o conteúdo no ciclo seguinte.
   const bool waitForPendingTab = tabContentPending && now < tabContentReadyAt;
   if (!waitForPendingTab && (displayNeedsRedraw || stateChanged || animationDue || clockDue)) {
     // No HUD normal, o único elemento animado é o visualizador. Depois do
     // primeiro desenho completo, transfere apenas seu pequeno retângulo.
-    const bool gifFrameVisible = false;
-    const bool canUseAudioPartial = currentState == STATE_HUD && animationDue &&
-                                    !displayNeedsRedraw && !stateChanged && !holdingCarCard && !gifFrameVisible;
-    if (canUseAudioPartial) {
-      updateAudioAnimation();
-      renderAudioDynamics();
-      audioDynamics.pushSprite(169, 151);
+    // O GIF do cartão é enviado diretamente por VehicleMedia::pushGifTest().
+    // Assim o restante do dashboard continua estático entre os quadros.
+    const bool canUseHudPartial = currentState == STATE_HUD &&
+                                  !displayNeedsRedraw && !stateChanged && !holdingCarCard &&
+                                  (animationDue || clockDue);
+    if (canUseHudPartial) {
+      if (animationDue) {
+        updateAudioAnimation();
+        renderAudioDynamics();
+        audioDynamics.pushSprite(169, 151);
+        lastRenderAt = now;
+      }
+      if (clockDue) {
+        renderClockDynamics();
+        clockDynamics.pushSprite(4, 26);
+        lastClockRenderAt = now;
+      }
+      // Com o aviso visível, o relógio fica congelado e nenhum desenho parcial
+      // cruza sua moldura. A caixa é enviada uma vez no quadro completo e fica
+      // estável até desaparecer.
       lastRenderedState = currentState;
-      lastRenderAt = now;
     } else if (currentState == STATE_BOOT) {
       // Mantém STATE_BOOT até este quadro ser realmente enviado. A troca para o
       // HUD acontece logo após pushSprite, para o próximo ciclo compor o painel
@@ -2427,13 +2585,25 @@ void loop() {
       renderSettingsScreen();
     }
 
-    if (!canUseAudioPartial) {
+    if (!canUseHudPartial) {
       canvas.pushSprite(0, 0);
       lastRenderedState = currentState;
       lastRenderAt = now;
-      if (currentState == STATE_HUD) lastClockRenderAt = now;
+      // Este quadro já foi entregue; os pedidos abaixo devem ficar para o
+      // próximo ciclo de desenho, não podem ser apagados por este ciclo.
       displayNeedsRedraw = false;
       tabContentPending = false;
+      if (currentState == STATE_HUD) {
+        lastClockRenderAt = now;
+        // O HUD já foi transmitido uma vez: agora a atualização pendente ganha
+        // seus seis segundos completos sobre o cartão superior direito.
+        if (otaNoticePendingForHud) {
+          otaNoticePendingForHud = false;
+          testUpdateNoticeVisible = true;
+          testUpdateNoticeUntil = millis() + 6000UL;
+          requestRedraw();
+        }
+      }
 
       // Só depois de transmitir o último quadro da abertura mudamos de estado.
       // Assim o ciclo seguinte detecta STATE_BOOT -> STATE_HUD e desenha o HUD
@@ -2445,10 +2615,24 @@ void loop() {
     }
   }
 
+  // O quadro é composto num sprite próprio e enviado somente sobre o Vehicle
+  // Profile visível. Fora dele, o menu nunca recebe pixels do GIF.
+  if (vehicleMode == MODE_FOTO && currentState == STATE_HUD) {
+    VehicleMedia::setGifTarget(tft, 5, 143, 150, 90);
+  } else if (vehicleMode == MODE_FOTO && currentState == STATE_FULLSCREEN_CAR) {
+    VehicleMedia::setGifTarget(tft, 12, 38, 296, 166);
+  } else {
+    VehicleMedia::clearGifTarget();
+  }
+  // O GIF permanece animado, mas nao concorre com um toque recente nem com a
+  // primeira atualizacao visual causada por ele.
+  if (now >= interactionPriorityUntil) VehicleMedia::tick();
+
   // A confirmação visual de SALVAR E APLICAR já foi enviada antes desta gravação.
   // Assim a memória permanente não faz o botão parecer lento ao toque.
-  if (settingsSavePending) {
+  if (settingsSavePending && (settingsSaveDueAt == 0 || now >= settingsSaveDueAt)) {
     settingsSavePending = false;
+    settingsSaveDueAt = 0;
     saveSettings();
   }
 

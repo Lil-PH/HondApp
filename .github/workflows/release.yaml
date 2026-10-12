@@ -34,10 +34,10 @@ jobs:
       - name: Preparar binario OTA
         run: cp .pio/build/esp32-s3-devkitc-1/firmware.bin main.cpp.bin
 
-      - name: Criar Release e publicar OTA
+      - name: Criar Release e publicar Versão
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: HondApp-V${{ github.run_number }}
+          tag_name: v${{ github.run_number }}
           name: HondApp v${{ github.run_number }}
           target_commitish: ${{ github.sha }}
           make_latest: true

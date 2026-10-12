@@ -12,7 +12,9 @@ constexpr char kVehicleTemporary[] = "/vehicle_upload.tmp";
 constexpr char kVehicleBackup[] = "/vehicle_upload.bak";
 constexpr char kGifTestTemporary[] = "/vehicle_gif_test.tmp";
 constexpr char kGifTestBackup[] = "/vehicle_gif_test.bak";
-constexpr char kGifTestPath[] = "/vehicle_test.gif";
+// O GIF enviado pelo formulário principal é a mídia real do Vehicle Profile.
+// Mantemos este identificador interno para não alterar a interface do painel.
+constexpr char kGifTestPath[] = "/vehicle.gif";
 constexpr char kBootTemporary[] = "/boot_logo_upload.tmp";
 constexpr char kBootBackup[] = "/boot_logo_upload.bak";
 constexpr char kBoot2Temporary[] = "/boot_logo2_upload.tmp";
@@ -169,7 +171,7 @@ StaticCache *findCache(const char *path, int width, int height) { for (auto &cac
 StaticCache *freeCache() { for (auto &cache : staticCaches) if (!cache.ready) return &cache; return &staticCaches[0]; }
 
 const char kGifTestPage[] PROGMEM = R"HTML(<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>HONDAPP TESTE GIF</title><style>body{margin:0;background:#080808;color:#eee;font:16px Arial;padding:22px}h1{color:#e40521;font-size:23px}.card{border:1px solid #e40521;border-radius:10px;padding:18px;max-width:440px}input,button{width:100%;box-sizing:border-box;margin-top:14px;padding:13px;border-radius:6px}button{background:#e40521;color:#fff;border:0;font-weight:bold}small{color:#aaa}</style></head><body><div class="card"><h1>HONDAPP // TESTE GIF</h1><p>Envie um GIF para testar a animacao no Vehicle Profile.</p><form method="POST" action="/upload" enctype="multipart/form-data"><input type="file" name="media" accept="image/gif" required><button type="submit">ENVIAR GIF DE TESTE</button></form><p><small>Use GIF de ate 10 MB e no maximo 150 x 90 pixels. Este arquivo de teste nao substitui sua foto JPG/PNG.</small></p></div></body></html>)HTML";
-const char kPhotoPage[] PROGMEM = R"HTML(<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>HONDAPP FOTO</title><style>body{margin:0;background:#080808;color:#eee;font:16px Arial;padding:22px}h1{color:#e40521;font-size:23px}.card{border:1px solid #e40521;border-radius:10px;padding:18px;max-width:440px}input,button{width:100%;box-sizing:border-box;margin-top:14px;padding:13px;border-radius:6px}button{background:#e40521;color:#fff;border:0;font-weight:bold}small{color:#aaa}</style></head><body><div class="card"><h1>HONDAPP // FOTO</h1><p>Envie uma foto JPEG ou PNG para o cartao microSD.</p><form method="POST" action="/upload" enctype="multipart/form-data"><input type="file" name="media" accept="image/jpeg,image/png" required><button type="submit">ENVIAR E SUBSTITUIR</button></form><p><small>JPG ou PNG, ate 10 MB. O novo arquivo so substitui o anterior depois de salvo por completo.</small></p></div></body></html>)HTML";
+const char kPhotoPage[] PROGMEM = R"HTML(<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>HONDAPP FOTO OU GIF</title><style>body{margin:0;background:#080808;color:#eee;font:16px Arial;padding:22px}h1{color:#e40521;font-size:23px}.card{border:1px solid #e40521;border-radius:10px;padding:18px;max-width:440px}input,button{width:100%;box-sizing:border-box;margin-top:14px;padding:13px;border-radius:6px}button{background:#e40521;color:#fff;border:0;font-weight:bold}small{color:#aaa}</style></head><body><div class="card"><h1>HONDAPP // FOTO OU GIF</h1><p>Envie uma foto JPEG, PNG ou um GIF animado para o Vehicle Profile.</p><form method="POST" action="/upload" enctype="multipart/form-data"><input type="file" name="media" accept="image/jpeg,image/png,image/gif" required><button type="submit">ENVIAR E SUBSTITUIR</button></form><p><small>JPG, PNG ou GIF de ate 10 MB. Para o GIF ficar fluido, prefira ate 150 x 90 pixels. O arquivo anterior so e substituido depois que o novo terminar de salvar.</small></p></div></body></html>)HTML";
 const char kBootPage[] PROGMEM = R"HTML(<!doctype html><html><head><meta name="viewport" content="width=device-width,initial-scale=1"><title>HONDAPP LOGO</title><style>body{margin:0;background:#080808;color:#eee;font:16px Arial;padding:22px}h1{color:#e40521;font-size:23px}.card{border:1px solid #e40521;border-radius:10px;padding:18px;max-width:440px}input,button{width:100%;box-sizing:border-box;margin-top:14px;padding:13px;border-radius:6px}button{background:#e40521;color:#fff;border:0;font-weight:bold}small{color:#aaa}</style></head><body><div class="card"><h1>HONDAPP // LOGO DE INICIALIZACAO</h1><p>Envie uma imagem JPEG ou PNG para usar como logo EXTRA no cartao microSD.</p><form method="POST" action="/upload" enctype="multipart/form-data"><input type="file" name="media" accept="image/jpeg,image/png" required><button type="submit">ENVIAR LOGO</button></form><p><small>JPG ou PNG, ate 10 MB. Sem cartao ou sem arquivo salvo, o painel inicia automaticamente com a logo Honda padrao.</small></p></div></body></html>)HTML";
 
 String extensionFor(String name) { name.toLowerCase(); if (name.endsWith(".jpg")) return ".jpg"; if (name.endsWith(".jpeg")) return ".jpeg"; if (name.endsWith(".png")) return ".png"; if (name.endsWith(".gif")) return ".gif"; return String(); }
@@ -209,12 +211,15 @@ void completeUpload() {
       // O GIF de teste tem nome próprio: a foto do usuário permanece intocada.
       if (gifOpen) { gif.close(); gifOpen = false; }
     } else {
+      // Depois da troca concluída, remove somente os outros formatos. O formato
+      // que acabou de chegar permanece intacto — inclusive /vehicle.gif.
       if (uploadTarget != "/vehicle.jpg") SD_MMC.remove("/vehicle.jpg");
       if (uploadTarget != "/vehicle.jpeg") SD_MMC.remove("/vehicle.jpeg");
       if (uploadTarget != "/vehicle.png") SD_MMC.remove("/vehicle.png");
-      SD_MMC.remove("/vehicle.gif"); refreshSavedMediaPath();
+      if (uploadTarget != "/vehicle.gif") SD_MMC.remove("/vehicle.gif");
+      refreshSavedMediaPath();
     }
-    server.send(200, "text/html", "<body style='background:#080808;color:white;font-family:Arial;padding:25px'><h2>HONDAPP</h2><p>Imagem salva no cartao microSD. Reiniciando o painel...</p></body>");
+    server.send(200, "text/html", "<body style='background:#080808;color:white;font-family:Arial;padding:25px'><h2>HONDAPP</h2><p>Foto ou GIF salvo no cartao microSD. Reiniciando o painel...</p></body>");
     restartPending = true; restartAt = millis() + 800; return;
   }
   SD_MMC.remove(uploadTemporary.c_str());
@@ -229,8 +234,10 @@ void receiveUpload() {
     SD_MMC.remove(uploadTemporary.c_str());
     uploadFile = SD_MMC.open(uploadTemporary.c_str(), FILE_WRITE);
     const char *base = uploadingBootLogo == 1 ? "/boot_logo" : (uploadingBootLogo == 2 ? "/boot_logo2" : (uploadingBootLogo == 3 ? "/vehicle_test" : "/vehicle"));
+    // O Vehicle Profile aceita JPG, PNG e GIF; as logos de inicialização
+    // continuam aceitando somente imagens estáticas.
     if (uploadingBootLogo == 3 && extension != ".gif") return;
-    if (uploadingBootLogo != 3 && extension == ".gif") return;
+    if ((uploadingBootLogo == 1 || uploadingBootLogo == 2) && extension == ".gif") return;
     uploadTarget = String(base) + extension;
     uploadValid = (bool)uploadFile;
   } else if (upload.status == UPLOAD_FILE_WRITE && uploadValid) {
@@ -268,10 +275,12 @@ bool begin() {
   if (!SD_MMC.setPins(kSdClk, kSdCmd, kSdD0, kSdD1, kSdD2, kSdD3)) return false;
   sdReady = SD_MMC.begin("/sdcard", false, false, 5);
   if (!sdReady) { uploadResult = "Cartao microSD nao encontrado. Insira um cartao FAT32 no slot integrado."; return false; }
-  SD_MMC.remove(kVehicleTemporary); SD_MMC.remove(kVehicleBackup); SD_MMC.remove(kGifTestTemporary); SD_MMC.remove(kGifTestBackup); SD_MMC.remove(kBootTemporary); SD_MMC.remove(kBootBackup); SD_MMC.remove(kBoot2Temporary); SD_MMC.remove(kBoot2Backup); SD_MMC.remove("/vehicle.gif");
-  refreshSavedMediaPath(); uploadResult = "Cartao microSD pronto para receber JPG ou PNG."; return true;
+  // Remove somente arquivos temporários deixados por um envio interrompido. A mídia
+  // concluída, inclusive /vehicle.gif, deve sobreviver ao reinício do painel.
+  SD_MMC.remove(kVehicleTemporary); SD_MMC.remove(kVehicleBackup); SD_MMC.remove(kGifTestTemporary); SD_MMC.remove(kGifTestBackup); SD_MMC.remove(kBootTemporary); SD_MMC.remove(kBootBackup); SD_MMC.remove(kBoot2Temporary); SD_MMC.remove(kBoot2Backup);
+  refreshSavedMediaPath(); uploadResult = "Cartao microSD pronto para receber JPG, PNG ou GIF."; return true;
 }
-bool exists() { return sdReady && savedMediaPath.length(); }
+bool exists() { return sdReady && (savedMediaPath.length() || SD_MMC.exists(kGifTestPath)); }
 const char *fileName() { return savedMediaPath.c_str(); }
 bool remove() { if (!sdReady) return false; resetGifTest(); invalidateStaticCache(); removeAllMedia(); refreshSavedMediaPath(); return !exists() && !gifTestExists(); }
 bool startUploadNetwork() { if (serverActive) return uploadingBootLogo == 0; if (!sdReady || WiFi.status() != WL_CONNECTED) return false; uploadingBootLogo = 0; uploadTemporary = kVehicleTemporary; uploadBackup = kVehicleBackup; server.on("/", HTTP_GET, sendPhotoPage); server.on("/upload", HTTP_POST, completeUpload, receiveUpload); server.begin(); serverActive = true; return true; }
@@ -366,6 +375,12 @@ bool drawGifTest(lgfx::LGFX_Sprite &target, int x, int y, int maxWidth, int maxH
   gifFrame.pushSprite(&target, x + (maxWidth - gifTargetWidth) / 2, y + (maxHeight - gifTargetHeight) / 2);
   return true;
 }
-bool preloadStatic(int maxWidth, int maxHeight) { return exists() && drawPath(nullptr, fileName(), 0, 0, maxWidth, maxHeight); }
-bool draw(lgfx::LGFX_Sprite &target, int x, int y, int maxWidth, int maxHeight) { return exists() && drawPath(&target, fileName(), x, y, maxWidth, maxHeight); }
+// GIF não usa o cache de JPG/PNG. Quando há somente /vehicle.gif,
+// savedMediaPath fica vazio; nunca passe esse caminho vazio ao SD_MMC.
+bool preloadStatic(int maxWidth, int maxHeight) {
+  return savedMediaPath.length() != 0 && drawPath(nullptr, savedMediaPath.c_str(), 0, 0, maxWidth, maxHeight);
+}
+bool draw(lgfx::LGFX_Sprite &target, int x, int y, int maxWidth, int maxHeight) {
+  return savedMediaPath.length() != 0 && drawPath(&target, savedMediaPath.c_str(), x, y, maxWidth, maxHeight);
+}
 } // namespace VehicleMedia

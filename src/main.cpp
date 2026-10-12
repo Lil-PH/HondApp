@@ -760,13 +760,15 @@ void maintainOnlineServices() {
 
   if (networkReady) {
     wifiConnecting = false;
-    if (wifiPortalActive && wifiPortalSuccessUntil != 0 && millis() >= wifiPortalSuccessUntil) {
+    // Depois de salvar uma nova rede no portal, reinicia assim que a ESP32
+    // realmente receber conexão dela. Isso aplica a nova rede sem esperar uma
+    // contagem fixa e não reinicia em cada boot normal com credenciais já salvas.
+    if (wifiPortalActive && wifiRestartAfterPortalSuccess) {
       wifiManager.stopConfigPortal();
       wifiPortalActive = false;
       wifiPortalSuccessUntil = 0;
-      if (wifiRestartAfterPortalSuccess) {
-        ESP.restart();
-      }
+      wifiRestartAfterPortalSuccess = false;
+      ESP.restart();
     }
     static bool clockConfigured = false;
     if (!clockConfigured) {

@@ -51,7 +51,6 @@ void loadSavedSettings();
 void saveSettings();
 void drawOfficialHondaSvg(int x, int y, uint16_t color);
 void renderBootScreen();
-void drawCarSilhouette(int ox, int oy, float scale);
 void drawHUDCard(int x, int y, int w, int h, const char* titleLeft, const char* titleRight);
 void drawTopMenuTab();
 void drawTestUpdateNoticeOnDisplay();
@@ -88,9 +87,6 @@ BootLogoType bootMode = BOOT_HONDA;
 
 
 ActiveTab activeTab = TAB_PERSONALIZACAO;
-
-
-VehicleDisplayMode vehicleMode = MODE_HOLOGRAMA;
 
 
 TimeFormatMode timeFormat = TIME_12H;
@@ -267,12 +263,10 @@ static int getSettingsMaxScroll() {
     // apenas dos controles que realmente estão visíveis; assim não existe uma área
     // vazia que possa ser arrastada como se a aba continuasse indefinidamente.
     int bootSectionY = 288;
-    if (vehicleMode == MODE_FOTO) {
-      // Com o botão REMOVER visível, a divisória fica abaixo dele, com uma
-      // folga visível antes do título da tela de inicialização.
-      if (VehicleMedia::exists()) bootSectionY = 322;
-      else if (VehicleMedia::uploadNetworkActive()) bootSectionY = 326;
-    }
+    // Com o botão REMOVER visível, a divisória fica abaixo dele, com uma
+    // folga visível antes do título da tela de inicialização.
+    if (VehicleMedia::exists()) bootSectionY = 322;
+    else if (VehicleMedia::uploadNetworkActive()) bootSectionY = 326;
     // O envio e o aviso ocupam espaço somente para a logo EXTRA atualmente escolhida.
     const bool extraLogoSelected = bootMode == BOOT_EXTRA1 || bootMode == BOOT_EXTRA2;
     const int contentBottom = bootSectionY + (extraLogoSelected ? 195 : 142);
@@ -291,7 +285,6 @@ void loadSavedSettings() {
   currentThemeHex = settings.theme;
   screenBrightness = settings.brightness;
   bootMode = (BootLogoType)settings.bootMode;
-  vehicleMode = (VehicleDisplayMode)settings.vehicleMode;
   timeFormat = (TimeFormatMode)settings.timeFormat;
   tempUnit = (TempUnitMode)settings.tempUnit;
   menuButtonVisible = settings.menuButtonVisible;
@@ -301,7 +294,6 @@ void loadSavedSettings() {
   // Não aceita um valor gravado corrompido que poderia deixar a tela ilegível.
   if (screenBrightness < 10) screenBrightness = 10;
   if (bootMode > BOOT_EXTRA2) bootMode = BOOT_HONDA;
-  if (vehicleMode > MODE_FOTO) vehicleMode = MODE_HOLOGRAMA;
   if (timeFormat > TIME_24H) timeFormat = TIME_12H;
   if (tempUnit > TEMP_FAHRENHEIT) tempUnit = TEMP_CELSIUS;
   tempSelectedHex = currentThemeHex;
@@ -312,7 +304,6 @@ void saveSettings() {
   settings.theme = currentThemeHex;
   settings.brightness = screenBrightness;
   settings.bootMode = (uint8_t)bootMode;
-  settings.vehicleMode = (uint8_t)vehicleMode;
   settings.timeFormat = (uint8_t)timeFormat;
   settings.tempUnit = (uint8_t)tempUnit;
   settings.menuButtonVisible = menuButtonVisible;
@@ -1080,35 +1071,6 @@ void renderBootScreen() {
 }
 
 // ============================================================
-// SILHUETA DO VEÍCULO (VETOR)
-// ============================================================
-void drawCarSilhouette(int ox, int oy, float scale) {
-  canvas.fillGradientRect(ox + (10 * scale), oy + (52 * scale), 125 * scale, 4 * scale, (uint16_t)0x03E0, currentThemeHex);
-
-  canvas.drawLine(ox + (5 * scale), oy + (36 * scale), ox + (20 * scale), oy + (25 * scale), C_TEXT_WHITE);
-  canvas.drawLine(ox + (20 * scale), oy + (25 * scale), ox + (45 * scale), oy + (19 * scale), C_TEXT_WHITE);
-  canvas.drawLine(ox + (45 * scale), oy + (19 * scale), ox + (58 * scale), oy + (6 * scale), C_TEXT_WHITE);
-  canvas.drawLine(ox + (58 * scale), oy + (6 * scale), ox + (88 * scale), oy + (6 * scale), C_TEXT_WHITE);
-  canvas.drawLine(ox + (88 * scale), oy + (6 * scale), ox + (108 * scale), oy + (22 * scale), C_TEXT_WHITE);
-  canvas.drawLine(ox + (108 * scale), oy + (22 * scale), ox + (128 * scale), oy + (26 * scale), C_TEXT_WHITE);
-  canvas.drawLine(ox + (128 * scale), oy + (26 * scale), ox + (137 * scale), oy + (36 * scale), C_TEXT_WHITE);
-  canvas.drawLine(ox + (137 * scale), oy + (36 * scale), ox + (130 * scale), oy + (44 * scale), C_TEXT_WHITE);
-  canvas.drawLine(ox + (130 * scale), oy + (44 * scale), ox + (10 * scale), oy + (44 * scale), C_TEXT_WHITE);
-  canvas.drawLine(ox + (10 * scale), oy + (44 * scale), ox + (5 * scale), oy + (36 * scale), C_TEXT_WHITE);
-
-  canvas.drawLine(ox + (58 * scale), oy + (7 * scale), ox + (68 * scale), oy + (20 * scale), C_TEXT_WHITE);
-  canvas.drawLine(ox + (68 * scale), oy + (20 * scale), ox + (88 * scale), oy + (20 * scale), C_TEXT_WHITE);
-  canvas.drawLine(ox + (88 * scale), oy + (20 * scale), ox + (86 * scale), oy + (7 * scale), C_TEXT_WHITE);
-
-  canvas.fillRect(ox + (126 * scale), oy + (28 * scale), 8 * scale, 6 * scale, currentThemeHex);
-
-  canvas.drawCircle(ox + (30 * scale), oy + (44 * scale), 8 * scale, C_TEXT_WHITE);
-  canvas.drawCircle(ox + (30 * scale), oy + (44 * scale), 3 * scale, C_TEXT_MUTED);
-  canvas.drawCircle(ox + (105 * scale), oy + (44 * scale), 8 * scale, C_TEXT_WHITE);
-  canvas.drawCircle(ox + (105 * scale), oy + (44 * scale), 3 * scale, C_TEXT_MUTED);
-}
-
-// ============================================================
 // DASHBOARD HUD
 // ============================================================
 void drawHUDCard(int x, int y, int w, int h, const char* titleLeft, const char* titleRight) {
@@ -1355,11 +1317,8 @@ void renderVehicleCard() {
 
   canvas.drawRoundRect(x + 100, y + 4, 50, 11, 3, currentThemeHex);
 
-  // Fotos JPEG ou PNG são lidas do cartão microSD. Se ainda não houver foto
-  // salva, o painel mostra um aviso em vez de uma imagem de exemplo.
-  if (vehicleMode == MODE_HOLOGRAMA) {
-    drawCarSilhouette(x + 4, y + 31, 1.10f);
-  } else {
+  // A foto ou GIF salvo é mostrado sem modo alternativo de vetor.
+  {
     // Aproveita quase toda a área útil do cartão, mantendo uma pequena margem
     // preta. VehicleMedia aplica "conter": amplia o máximo possível, mas nunca
     // corta nem estica a foto.
@@ -1550,10 +1509,8 @@ void renderFullscreenCarScreen() {
   canvas.setCursor(15, 14);
   canvas.print("VEHICLE PROFILE // 360 FULLSCREEN");
 
-  // Sem preset, RPM ou velocidade: a tela cheia prioriza apenas a imagem centralizada.
-  if (vehicleMode == MODE_HOLOGRAMA) {
-    drawCarSilhouette(30, 74, 1.9f);
-  } else {
+  // A tela cheia prioriza apenas a imagem ou GIF centralizado.
+  {
     const int imageW = 296;
     const int imageH = 166;
     const int imageX = (320 - imageW) / 2;
@@ -1839,26 +1796,20 @@ void renderSettingsScreen() {
     int sy = 68 - scrollY;
     canvas.setTextColor(C_TEXT_WHITE, C_MENU_BG);
     canvas.setCursor(10, sy + 160);
-    canvas.print("# FOTO OU HOLOGRAMA DO VEICULO");
+    canvas.print("# FOTO OU GIF DO VEICULO");
 
-    bool mHolo = (vehicleMode == MODE_HOLOGRAMA);
-    canvas.fillRoundRect(10, sy + 176, 145, 32, 6, C_CARD_BG);
-    canvas.drawRoundRect(10, sy + 176, 145, 32, 6, mHolo ? tempSelectedHex : C_BORDER_DARK);
+    const bool mFoto = true;
+    canvas.fillRoundRect(10, sy + 176, 300, 32, 6, C_CARD_BG);
+    canvas.drawRoundRect(10, sy + 176, 300, 32, 6, tempSelectedHex);
     canvas.setTextColor(C_TEXT_WHITE, C_CARD_BG);
-    canvas.setCursor(24, sy + 187); canvas.print("HOLOGRAMA VETOR");
-
-    bool mFoto = (vehicleMode == MODE_FOTO);
-    canvas.fillRoundRect(165, sy + 176, 145, 32, 6, C_CARD_BG);
-    canvas.drawRoundRect(165, sy + 176, 145, 32, 6, mFoto ? tempSelectedHex : C_BORDER_DARK);
-    canvas.setTextColor(C_TEXT_MUTED, C_CARD_BG);
-    canvas.setCursor(195, sy + 187); canvas.print("FOTO OU GIF");
+    canvas.setCursor(124, sy + 187); canvas.print("FOTO OU GIF");
     canvas.setTextColor(C_AMBER_JDM, C_MENU_BG);
-    canvas.setCursor(171, sy + 214); canvas.print("GIF EM DESENVOLVIMENTO");
+    canvas.setCursor(10, sy + 214); canvas.print("GIF EM DESENVOLVIMENTO");
 
     // O bloco seguinte começa logo após o conteúdo visível. Isso elimina a faixa
     // vazia entre a escolha de mídia e a tela de inicialização.
     int bootSectionY = 288;
-    if (mHolo) {
+    if (false) {
       canvas.setTextColor(C_TEXT_MUTED, C_MENU_BG);
       canvas.setCursor(10, sy + 216);
       canvas.print("MODELO DO PRESET");
@@ -2304,12 +2255,8 @@ void handleTouchEvents() {
             }
 
             if (activeTab == TAB_PERSONALIZACAO) {
-              if (contentY >= 176 && contentY <= 208) {
-                if (startTouchX <= 155) vehicleMode = MODE_HOLOGRAMA;
-                else vehicleMode = MODE_FOTO;
-              }
 
-              if (vehicleMode == MODE_FOTO && contentY >= 228 && contentY <= 262) {
+              if (contentY >= 228 && contentY <= 262) {
                 // O servidor de envio usa o endereço da rede Wi-Fi atual. Sem uma
                 // conexão válida, leva diretamente à tela que permite escolher a rede.
                 if (WiFi.status() != WL_CONNECTED) {
@@ -2326,18 +2273,15 @@ void handleTouchEvents() {
                 }
               }
 
-              if (vehicleMode == MODE_FOTO && contentY >= 268 && contentY <= 302 && VehicleMedia::exists()) {
+              if (contentY >= 268 && contentY <= 302 && VehicleMedia::exists()) {
                 VehicleMedia::remove();
-                vehicleMode = MODE_HOLOGRAMA;
                 wifiNotice = "FOTO OU GIF REMOVIDO";
                 wifiNoticeUntil = millis() + 3000UL;
               }
 
               int bootSectionY = 288;
-              if (vehicleMode == MODE_FOTO) {
-                if (VehicleMedia::exists()) bootSectionY = 326;
-                else if (VehicleMedia::uploadNetworkActive()) bootSectionY = 326;
-              }
+              if (VehicleMedia::exists()) bootSectionY = 326;
+              else if (VehicleMedia::uploadNetworkActive()) bootSectionY = 326;
               if (contentY >= bootSectionY - 6 && contentY <= bootSectionY + 16 && startTouchX >= 200) {
                 // Prepara a imagem enquanto o menu ainda está na tela. Dessa forma
                 // o primeiro quadro da abertura e toda a barra permanecem fluidos.
@@ -2514,7 +2458,7 @@ void loop() {
   // Usa o tempo da abertura para montar as duas versões proporcionais de
   // JPG/PNG na PSRAM. Cada tamanho é preparado uma única vez; o HUD continua
   // aparecendo após os seis segundos mesmo quando não existe mídia salva.
-  if (bootAnimating && vehicleMode == MODE_FOTO && VehicleMedia::exists()) {
+  if (bootAnimating && VehicleMedia::exists()) {
     const unsigned long bootElapsed = now - bootStartTime;
     if (bootMediaPreloadStage == 0 && bootElapsed >= 3600UL) {
       VehicleMedia::preloadStatic(150, 90);
@@ -2624,9 +2568,9 @@ void loop() {
 
   // O quadro é composto num sprite próprio e enviado somente sobre o Vehicle
   // Profile visível. Fora dele, o menu nunca recebe pixels do GIF.
-  if (vehicleMode == MODE_FOTO && currentState == STATE_HUD) {
+  if (currentState == STATE_HUD) {
     VehicleMedia::setGifTarget(tft, 5, 143, 150, 90);
-  } else if (vehicleMode == MODE_FOTO && currentState == STATE_FULLSCREEN_CAR) {
+  } else if (currentState == STATE_FULLSCREEN_CAR) {
     VehicleMedia::setGifTarget(tft, 12, 38, 296, 166);
   } else {
     VehicleMedia::clearGifTarget();

@@ -44,7 +44,7 @@ Ela usa quatro cartões alinhados em uma grade 2 × 2:
 |---|---|
 | **Clock / Date** | Hora, segundos e data em estilo digital. |
 | **Climate Monitor** | Área visual dedicada ao ambiente e clima. |
-| **Vehicle Profile** | Exibe a foto personalizada do veículo ou abre o envio de mídia. |
+| **Vehicle Profile** | Exibe a foto personalizada com envio de mídia. |
 | **Audio Visualizer** | Visualização sonora integrada ao tema cyberpunk. |
 
 <br>

@@ -178,9 +178,9 @@ static bool onlineBootstrapCompleted = false;
 // Cada Release OTA usa uma tag simples e crescente: v1, v2, v3, ... . A busca
 // percorre todas as páginas da API do GitHub para encontrar a maior versão publicada.
 static const char OTA_RELEASE_API_BASE_URL[] = "https://api.github.com/repos/Lil-PH/HondApp/releases?per_page=100&page=";
-// Identificação desta compilação. Ao publicar a próxima atualização, altere
-// somente este valor para v2, v3 e assim por diante.
-static constexpr char HONDAPP_FIRMWARE_VERSION[] = "v1";
+// Identificação gravada dentro deste binário. Ela deve ser igual à tag do
+// Release que publica este main.cpp.bin; esta compilação corresponde à v11.
+static constexpr char HONDAPP_FIRMWARE_VERSION[] = "v11";
 static String otaFirmwareUrl = "";
 // A versão instalada é lembrada na memória não volátil após uma OTA validada.
 static String installedOtaVersion = HONDAPP_FIRMWARE_VERSION;
@@ -2425,10 +2425,15 @@ void setup() {
   loadSavedLocation(weatherLatitude, weatherLongitude, detectedTimezone, detectedCity);
   // A consulta de rede refina este local assim que houver internet.
   locationDetected = false;
-  // Esta imagem é a versão v1. Registra a identificação da compilação mesmo
-  // em placas que ainda tinham um histórico OTA antigo (por exemplo, ota-6).
-  installedOtaVersion = HONDAPP_FIRMWARE_VERSION;
-  saveInstalledOtaVersion(installedOtaVersion);
+  // Mantém a maior versão conhecida. Uma OTA validada grava sua tag antes do
+  // reinício; portanto ela não pode ser rebaixada por um binário antigo que
+  // ainda tenha uma identificação menor. Ao gravar esta v11 diretamente pelo
+  // Deploy, a identificação interna promove a placa de v1 para v11.
+  installedOtaVersion = loadInstalledOtaVersion();
+  if (compareVersions(String(HONDAPP_FIRMWARE_VERSION), installedOtaVersion) > 0) {
+    installedOtaVersion = HONDAPP_FIRMWARE_VERSION;
+    saveInstalledOtaVersion(installedOtaVersion);
+  }
   tft.init();
   tft.setRotation(3);
   // Limpa a GRAM do controlador antes de qualquer alocação, Wi-Fi ou desenho por sprite.
